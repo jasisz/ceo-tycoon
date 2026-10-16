@@ -206,7 +206,7 @@ const judgeSchema = {
     },
     promises: {
       type: "array",
-      description: "Concrete promises the CEO made that someone will remember (bonus, raise, perk). Empty if none.",
+      description: "Concrete promises the CEO made that COST MONEY to keep (a bonus, a raise, a perk, a paid trip) - cost must be > 0. Business targets (headcount, revenue, users, valuation) are NOT promises: put measurable ones in kpis. Vague commitments (transparency, 'regular updates', culture) are not promises either. Empty if none.",
       items: {
         type: "object",
         properties: {
@@ -256,7 +256,7 @@ const judgeSchema = {
     kpis: {
       type: "array",
       description:
-        "Only for the 'investors' scene: concrete numeric claims about the future the CEO made (e.g. '3x revenue by next year', 'we'll be 50 people'). Investors will hold the CEO to them. Empty if the pitch was vague or for any other scene.",
+        "Concrete numeric claims about the company's future the CEO made in public (e.g. '3x revenue by next year', 'we'll be 300 people by Q4'), in any scene - investors read transcripts and will hold the CEO to them. Map each to the closest metric (users/summaries/customers -> revenue). Empty if nothing measurable was claimed or in a private 1:1.",
       items: {
         type: "object",
         properties: {
@@ -403,7 +403,8 @@ export function judge(req: JudgeRequest) {
         deltas: clampDeltas(j.deltas),
         consequences: { cash: within(j.consequences.cash, b.cash), headcount: within(j.consequences.headcount, b.headcount) },
         reactions: j.reactions.slice(0, 3),
-        promises: j.promises.slice(0, 2),
+        // a "promise" that costs nothing can't be kept or broken by the engine; measurable ones live in kpis
+        promises: j.promises.filter((p) => p.cost > 0).slice(0, 2),
         accepted: (req.scene === "rehire" || req.scene === "recruit") && j.accepted,
         // in a 1:1 only the person in the room can be affected (e.g. an on-the-spot raise)
         people:
@@ -412,7 +413,7 @@ export function judge(req: JudgeRequest) {
             : req.scene === "employee"
               ? clampPeople(j.people).filter((p) => p.name.toLowerCase().includes((req.npc?.name ?? "").split(" ")[0].toLowerCase()))
               : clampPeople(j.people),
-        kpis: req.scene === "investors" ? j.kpis.slice(0, 3) : [],
+        kpis: ["employee", "rehire", "recruit", "brunner"].includes(req.scene) ? [] : j.kpis.slice(0, 3),
         deal: clampDeal(j.deal, tm),
         votes: req.scene === "boardvote" ? j.votes.slice(0, 6).map((v) => ({ ...v, line: v.line.slice(0, 200) })) : [],
         company: req.scene === "employee" || req.scene === "rehire" || req.scene === "recruit" ? EMPTY_COMPANY : clampCompany(j.company),

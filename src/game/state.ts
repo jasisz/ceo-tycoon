@@ -936,8 +936,8 @@ export function endQuarter(s: GameState): QuarterReport {
   s.lastRevenue = rev;
   lines.push(`Revenue ${fmt(rev)}, costs ${fmt(cost)} (incl. your ${fmt(ceoPay(s))} salary).`);
 
-  // promises come due
-  for (const p of s.promises.filter((p) => p.dueQuarter <= s.quarter)) {
+  // promises come due (a $0 "promise" can't be kept or broken - old saves may have some)
+  for (const p of s.promises.filter((p) => p.dueQuarter <= s.quarter && p.cost > 0)) {
     const to = /\(to (.+)\)$/.exec(p.text)?.[1];
     const person = to ? s.employees.find((e) => e.name === to) : undefined;
     if (s.cash > p.cost * 2) {

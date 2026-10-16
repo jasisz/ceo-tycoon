@@ -519,8 +519,10 @@ function showReactions(j: Judgement, onlyFor?: number) {
   });
 }
 
+/** Money promises go on the books; measurable public claims become KPIs the engine checks. */
 function addPromises(j: Judgement, to?: Employee) {
-  for (const p of j.promises) {
+  for (const k of j.kpis ?? []) addKpi(s, k.quote, k.metric, k.multiplier, k.quarters);
+  for (const p of j.promises.filter((x) => x.cost > 0)) {
     const due = s.quarter + clamp(p.quarters_until_due, 1, 4);
     s.promises.push({ text: to ? `${p.text} (to ${to.name})` : p.text, dueQuarter: due, cost: clamp(p.cost, 0, 2_000_000) });
     if (to) remember(to, s.quarter, `CEO promised me: "${p.text}" by Q${due}.`);
@@ -555,7 +557,8 @@ function judgementHtml(title: string, j: Judgement, extra = "", deltas: Partial<
     ${j.reactions.map((r) => `<p class="quote"><b>${esc(r.speaker)}:</b> “${esc(r.line)}”</p>`).join("")}
     ${extra}
     <div class="chips">${deltaChips(deltas)}<span class="chip neutral">BS-meter ${j.bullshit_score}%</span></div>
-    ${j.promises.length ? `<p class="promise">📝 Remembered promise: ${j.promises.map((p) => esc(p.text)).join(", ")}</p>` : ""}`;
+    ${j.promises.some((p) => p.cost > 0) ? `<p class="promise">📝 Remembered promise: ${j.promises.filter((p) => p.cost > 0).map((p) => `${esc(p.text)} (~${fmt(p.cost)})`).join(", ")}</p>` : ""}
+    ${j.kpis?.length ? `<p class="promise">📈 Investors wrote down: ${j.kpis.map((k) => `“${esc(k.quote)}”`).join(", ")}. The engine will check.</p>` : ""}`;
 }
 
 async function withBusy<T>(fn: () => Promise<T>): Promise<T | undefined> {
@@ -652,10 +655,6 @@ async function pitch() {
     const [j] = await Promise.all([judged("investors", r.text, { terms }), arrived]);
     applyEffects(s, j.deltas);
     addPromises(j);
-    for (const k of j.kpis) addKpi(s, k.quote, k.metric, k.multiplier, k.quarters);
-    const kpiHtml = s.kpis.length
-      ? `<p class="promise">📝 Investors wrote down: ${j.kpis.map((k) => `“${esc(k.quote)}”`).join(", ") || "nothing new"}. They will check.</p>`
-      : "";
     s.actionsLeft--;
     s.lastRaiseQuarter = s.quarter;
     const deal = j.deal ?? { verdict: "pass" as const, premoney: 0, amount: 0, line: "" };
@@ -691,7 +690,7 @@ async function pitch() {
         scene.investorsLeave(false);
       }
     }
-    await modal(judgementHtml("Pitch result", j, extra + kpiHtml), [{ label: "OK", value: "ok" }]);
+    await modal(judgementHtml("Pitch result", j, extra), [{ label: "OK", value: "ok" }]);
   });
 }
 
@@ -777,13 +776,11 @@ async function media() {
     if (o.cost) s.cash -= o.cost;
     applyEffects(s, j.deltas);
     addPromises(j);
-    for (const k of j.kpis) addKpi(s, k.quote, k.metric, k.multiplier, k.quarters);
     s.actionsLeft--;
     s.lastMediaQuarter = s.quarter;
     log(s, `${o.name}: ${j.narration}`);
     showReactions(j);
-    const kpiHtml = j.kpis.length ? `<p class="promise">📝 Investors clipped it: ${j.kpis.map((k) => `“${esc(k.quote)}”`).join(", ")}.</p>` : "";
-    await modal(judgementHtml(`${o.icon} ${o.name}`, j, kpiHtml, o.cost ? { ...j.deltas, cash: -o.cost } : j.deltas), [{ label: "Close the tab", value: "ok" }]);
+    await modal(judgementHtml(`${o.icon} ${o.name}`, j, "", o.cost ? { ...j.deltas, cash: -o.cost } : j.deltas), [{ label: "Close the tab", value: "ok" }]);
   });
 }
 
