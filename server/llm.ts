@@ -98,6 +98,40 @@ export interface JudgeRequest {
   bounds?: { cash: [number, number]; headcount: [number, number] };
 }
 
+/** Effects on specific, named employees - so "Alex finally gets the raise" actually sticks. */
+const peopleSchema = {
+  type: "array",
+  description:
+    "Specific employees this directly affects, by their EXACT name from the roster. Empty if nobody in particular. E.g. someone gets a raise, is humiliated, is promoted, is blamed.",
+  items: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Exact full name from the roster" },
+      memory: { type: "string", description: "One sentence they will remember, from their point of view" },
+      salary_change: { type: "integer", description: "Change to their pay in USD per quarter (a raise is positive). 0 if none." },
+      mood_change: { type: "integer", description: "-30..30" },
+      new_quirk: { type: "string", description: "Replacement personality quirk if this changes who they are (e.g. 'finally got a raise and now wants a title'), else empty" },
+      leaves: { type: "boolean", description: "true if this person quits or is pushed out because of this. Count them in headcount too." },
+    },
+    required: ["name", "memory", "salary_change", "mood_change", "new_quirk", "leaves"],
+    additionalProperties: false,
+  },
+} as const;
+
+const PeopleEffects = z.array(
+  z.object({ name: z.string(), memory: z.string(), salary_change: z.number(), mood_change: z.number(), new_quirk: z.string(), leaves: z.boolean().optional() }),
+);
+export type PeopleEffects = z.infer<typeof PeopleEffects>;
+
+const clampPeople = (p: PeopleEffects) =>
+  p.slice(0, 4).map((x) => ({
+    ...x,
+    memory: x.memory.slice(0, 200),
+    salary_change: Math.max(-20_000, Math.min(30_000, Math.round(x.salary_change))),
+    mood_change: Math.max(-30, Math.min(30, Math.round(x.mood_change))),
+    new_quirk: x.new_quirk.slice(0, 120),
+  }));
+
 const judgeSchema = {
   type: "object",
   properties: {
@@ -143,6 +177,7 @@ const judgeSchema = {
       description: "For 'employee' and 'rehire' scenes: one sentence of what this person will remember about this conversation, from their point of view. Empty string otherwise.",
     },
     accepted: { type: "boolean", description: "Only for the 'rehire' scene: does the former employee agree to come back? false for all other scenes." },
+    people: peopleSchema,
     kpis: {
       type: "array",
       description:
@@ -160,7 +195,7 @@ const judgeSchema = {
       },
     },
   },
-  required: ["deltas", "consequences", "narration", "reactions", "promises", "bullshit_score", "memory", "accepted", "kpis"],
+  required: ["deltas", "consequences", "narration", "reactions", "promises", "bullshit_score", "memory", "accepted", "people", "kpis"],
   additionalProperties: false,
 } as const;
 
@@ -173,6 +208,7 @@ const Judgement = z.object({
   bullshit_score: z.number(),
   memory: z.string(),
   accepted: z.boolean(),
+  people: PeopleEffects,
   kpis: z.array(z.object({ quote: z.string(), metric: z.enum(["revenue", "headcount", "valuation", "hype"]), multiplier: z.number(), quarters: z.number() })),
 });
 export type Judgement = z.infer<typeof Judgement>;
@@ -186,7 +222,7 @@ const SCENE_BRIEF: Record<Scene, string> = {
   rehire:
     "The CEO is trying to convince a former employee to come back as a well-paid contractor, usually because only they understand a system that is now broken. They remember everything in their history and their grudge level. Set accepted=true only if the CEO genuinely addresses what went wrong (an apology that sounds real, paying what was promised, respect). Groveling corporate speak or new promises from a CEO who broke old ones should fail. The reaction is that person speaking.",
   employee:
-    "The CEO is having a one-on-one with a single employee. Effects should be small (morale within -6..6, hype ~0). The reaction must be that employee speaking in character, and they remember their history with the CEO (broken promises, colleagues fired, crises they fixed).",
+    "The CEO is having a one-on-one with a single employee. Effects should be small (morale within -6..6, hype ~0). The reaction must be that employee speaking in character, and they remember their history with the CEO (broken promises, colleagues fired, crises they fixed). If the CEO grants a raise or pay cut effective right now, put it in people (this person, with salary_change per quarter) - that money is real and immediate. A raise 'next quarter' or 'soon' is a promise instead. Be realistic: a raise above ~30% is absurd.",
   event:
     "The CEO is responding in their own words to a company event. Judge the response in light of the event. Also decide the material consequences (cash, headcount): talking does not make a cost disappear - if every sensible way out of this event costs money or people, so does this one, unless the response genuinely and cleverly avoids it.",
 };
@@ -215,6 +251,10 @@ function mockJudge(req: JudgeRequest): Judgement {
     promises: bonus > 0 && !inv ? [{ text: "That bonus you mentioned", quarters_until_due: 2, cost: 50_000 }] : [],
     bullshit_score: Math.min(100, buzz * 15),
     memory: req.scene === "employee" || req.scene === "rehire" ? "[mock] The CEO talked at me for a while." : "",
+    people:
+      req.scene === "employee" && req.npc && /\braise\b/.test(t) && !/\b(next|soon|later|promise)\b/.test(t)
+        ? [{ name: req.npc.name, memory: "[mock] The CEO gave me a raise on the spot.", salary_change: 5_000, mood_change: 15, new_quirk: "", leaves: false }]
+        : [],
     accepted: req.scene === "rehire" && ((req.npc?.grudge ?? 50) < 55 || /\b(pay|sorry|apolog)/.test(t)),
     kpis: inv && /(\d+)\s*x/.test(t) ? [{ quote: req.text.slice(0, 80), metric: "revenue" as const, multiplier: Number(/(\d+)\s*x/.exec(t)![1]), quarters: 4 }] : [],
   };
@@ -241,6 +281,13 @@ export function judge(req: JudgeRequest) {
         reactions: j.reactions.slice(0, 3),
         promises: j.promises.slice(0, 2),
         accepted: req.scene === "rehire" && j.accepted,
+        // in a 1:1 only the person in the room can be affected (e.g. an on-the-spot raise)
+        people:
+          req.scene === "rehire"
+            ? []
+            : req.scene === "employee"
+              ? clampPeople(j.people).filter((p) => p.name.toLowerCase().includes((req.npc?.name ?? "").split(" ")[0].toLowerCase()))
+              : clampPeople(j.people),
         kpis: req.scene === "investors" ? j.kpis.slice(0, 3) : [],
         memory: j.memory.slice(0, 200),
       };
@@ -279,8 +326,9 @@ const eventSchema = {
           label: { type: "string", description: "What the CEO does, max ~8 words" },
           outcome: { type: "string", description: "One funny sentence describing the consequence" },
           effects: effectSchema,
+          people: peopleSchema,
         },
-        required: ["label", "outcome", "effects"],
+        required: ["label", "outcome", "effects", "people"],
         additionalProperties: false,
       },
     },
@@ -300,7 +348,7 @@ const Effects = z.object({
 const GameEvent = z.object({
   title: z.string(),
   description: z.string(),
-  choices: z.array(z.object({ label: z.string(), outcome: z.string(), effects: Effects })).min(2),
+  choices: z.array(z.object({ label: z.string(), outcome: z.string(), effects: Effects, people: PeopleEffects.optional() })).min(2),
 });
 export type GameEvent = z.infer<typeof GameEvent>;
 
@@ -363,14 +411,14 @@ function mockEvent(): GameEvent {
 
 export function generateEvent(context: string, recentTitles: string[]) {
   const user = `Invent this quarter's random event for the CEO. It should react to the current state of the company (low morale, high suspicion, shrinking runway, weird pivots, broken promises...) or be a classic startup absurdity (license shortages, English lessons, sudden urge to pivot or buy an unrelated company, reorganisations, office plants, the co-CEO proposal, a viral Glassdoor review...).
-Make effects proportional and consistent with the outcomes. Don't repeat these recent events: ${recentTitles.join("; ") || "none"}.
+Make effects proportional and consistent with the outcomes. If the event is about specific employees, use their exact names from the roster and record, per choice, what happens to them in "people" (a raise must have a salary_change, a resolved grievance a new_quirk). Don't repeat these recent events: ${recentTitles.join("; ") || "none"}.
 
 Game state:
 ${context}`;
   return withFallback(
     async () => {
       const ev = GameEvent.parse(await ask(WORLD, user, eventSchema));
-      return { ...ev, choices: ev.choices.slice(0, 3).map((c) => ({ ...c, effects: clampEffects(c.effects) })) };
+      return { ...ev, choices: ev.choices.slice(0, 3).map((c) => ({ ...c, effects: clampEffects(c.effects), people: clampPeople(c.people ?? []) })) };
     },
     mockEvent,
   );

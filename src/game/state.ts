@@ -269,6 +269,40 @@ export function rememberAll(s: GameState, text: string) {
   for (const e of s.employees) remember(e, s.quarter, text);
 }
 
+export function findEmployee(s: GameState, name: string) {
+  const n = name.trim().toLowerCase();
+  return s.employees.find((e) => e.name.toLowerCase() === n) ?? s.employees.find((e) => n.includes(e.name.split(" ")[0].toLowerCase()));
+}
+
+export interface PersonEffect {
+  name: string;
+  memory: string;
+  salary_change: number;
+  mood_change: number;
+  new_quirk: string;
+  leaves?: boolean;
+}
+
+/** Apply what happened to specific named people. Returns lines for the UI (and how many walked out). */
+export function applyPeople(s: GameState, people: PersonEffect[] = []) {
+  const lines: string[] & { left?: number } = [];
+  lines.left = 0;
+  for (const p of people) {
+    const e = findEmployee(s, p.name);
+    if (!e) continue;
+    if (p.memory) remember(e, s.quarter, p.memory);
+    if (p.salary_change) e.salary = Math.max(25_000, e.salary + p.salary_change);
+    if (p.mood_change) e.moodOffset = clamp(e.moodOffset + p.mood_change, -50, 50);
+    if (p.new_quirk) e.quirk = p.new_quirk.replace(/^(they|he|she)\s+/i, "");
+    lines.push(`${e.name}: ${p.memory}${p.salary_change ? ` (${p.salary_change > 0 ? "+" : ""}${fmt(p.salary_change)}/q)` : ""}${p.leaves ? " — and left." : ""}`);
+    if (p.leaves) {
+      removeEmployee(s, e.id, "quit");
+      lines.left++;
+    }
+  }
+  return lines;
+}
+
 /** Where your next CEO gig starts depends on how the last one went. */
 function startingOffice(prev?: GameState): { office: OfficeTier; staff: number; cash: number } {
   if (!prev) return { office: "openspace", staff: 10, cash: 3_000_000 };
@@ -631,6 +665,10 @@ export function describe(s: GameState) {
     s.crises.length ? `ONGOING CRISES: ${s.crises.map((k) => SYSTEMS[k].crisis).join(" ")}` : "",
     s.kpis.length ? `Numbers the CEO promised investors: ${s.kpis.map((k) => `"${k.quote}" (due Q${k.dueQuarter})`).join("; ")}.` : "",
     s.alumni.length ? `Former employees: ${s.alumni.slice(0, 5).map((a) => `${a.name} (${a.reason} Q${a.leftQuarter}${a.atCompetitor ? ", now at a competitor" : ""}${a.grudge > 60 ? ", holds a grudge" : ""})`).join("; ")}.` : "",
+    `Roster: ${s.employees
+      .slice(0, 16)
+      .map((e) => `${e.name} (${e.role}, mood ${employeeMood(s, e)}, ${fmt(payOf(e))}/q, ${e.quirk})`)
+      .join("; ")}${s.employees.length > 16 ? ` and ${s.employees.length - 16} more` : ""}.`,
     `Recent log: ${s.log.slice(0, 4).join(" | ")}`,
   ]
     .filter(Boolean)
@@ -655,15 +693,27 @@ export function endQuarter(s: GameState): QuarterReport {
 
   // promises come due
   for (const p of s.promises.filter((p) => p.dueQuarter <= s.quarter)) {
+    const to = /\(to (.+)\)$/.exec(p.text)?.[1];
+    const person = to ? s.employees.find((e) => e.name === to) : undefined;
     if (s.cash > p.cost * 2) {
       s.cash -= p.cost;
-      s.morale = clamp(s.morale + 6);
-      rememberAll(s, `CEO actually kept a promise: "${p.text}".`);
+      s.morale = clamp(s.morale + (person ? 2 : 6));
+      if (person) {
+        person.moodOffset = clamp(person.moodOffset + 15, -50, 50);
+        remember(person, s.quarter, `CEO actually kept their promise to me: "${p.text.replace(/ \(to .+\)$/, "")}".`);
+        if (/raise|salary|pay|bonus|compensation/i.test(p.text) && /raise|salary|pay rise|compensation/i.test(p.text)) {
+          person.salary += Math.min(30_000, Math.round(p.cost / 4));
+          if (/raise/i.test(person.quirk)) person.quirk = "finally got the raise and is now asking about a title";
+        }
+      } else rememberAll(s, `CEO actually kept a promise: "${p.text}".`);
       lines.push(`You actually kept a promise: "${p.text}" (${fmt(p.cost)}). People are shocked.`);
     } else {
       s.morale = clamp(s.morale - 18);
       s.reputation = clamp(s.reputation - 4);
-      rememberAll(s, `CEO broke a promise: "${p.text}". Never paid.`);
+      if (person) {
+        person.moodOffset = clamp(person.moodOffset - 20, -50, 50);
+        remember(person, s.quarter, `CEO broke their promise to me: "${p.text.replace(/ \(to .+\)$/, "")}". Never paid.`);
+      } else rememberAll(s, `CEO broke a promise: "${p.text}". Never paid.`);
       lines.push(`Broken promise: "${p.text}". Someone printed your old email and taped it to the fridge.`);
     }
   }
@@ -755,16 +805,44 @@ export function endQuarter(s: GameState): QuarterReport {
 
 // ---------- quarterly steps ----------
 
-/** Systems drift toward their owner's care; orphaned ones rot. Crossing 30 is a crisis the board hears about. */
+const INCIDENTS: Record<SystemId, string[]> = {
+  infra: ["A certificate expired at 3am.", "Someone ran a migration on prod 'just to check'.", "The cloud bill doubled because of a forgotten GPU."],
+  billing: ["Taxes in a new country. Nobody noticed for a month.", "A rounding bug paid a customer to use the product.", "Invoices went out in Comic Sans."],
+  product: ["A redesign moved every button.", "A 'quick fix' broke onboarding.", "The roadmap was replaced by a Miro board nobody can open."],
+  sales: ["The top client's champion left.", "A competitor undercut you by 40%.", "Sales promised a feature that doesn't exist. Again."],
+};
+
+/** Hit one or all systems (pivots, layoffs...). */
+export function damageSystems(s: GameState, amount: number, only?: SystemId[]) {
+  for (const k of only ?? SYSTEM_IDS) s.systems[k].health = clamp(s.systems[k].health - amount);
+}
+
+/**
+ * Systems decay every quarter (entropy, incidents, load) and their owner fights back depending
+ * on mood and how many systems they're juggling. Orphaned ones rot. Crossing 30 is a crisis.
+ */
 function stepSystems(s: GameState, lines: string[]) {
+  const changes: string[] = [];
   for (const k of SYSTEM_IDS) {
     const sys = s.systems[k];
+    const before = sys.health;
     const owner = s.employees.find((e) => e.id === sys.owner);
     if (!owner) sys.owner = null;
+    let delta = -7; // entropy: everything gets worse if nobody tends it
+    if (k === "infra" && s.employees.length > 15) delta -= 3; // scale
+    if ((k === "infra" || k === "product") && hotDeskers(s) > 0) delta -= 2; // nobody can focus on a beanbag
+    if (Math.random() < 0.15) {
+      const hit = 8 + Math.floor(Math.random() * 11);
+      delta -= hit;
+      lines.push(`${SYSTEMS[k].emoji} Incident: ${pick(INCIDENTS[k])} (−${hit})`);
+    }
     if (owner) {
-      const mood = employeeMood(s, owner);
-      sys.health = clamp(sys.health + (owner.contractor ? 12 : 4 + Math.round((mood - 50) / 8)));
+      const juggling = ownedBy(s, owner.id).length;
+      const care = owner.contractor ? 15 : Math.max(2, 4 + Math.round((employeeMood(s, owner) - 30) / 6));
+      delta += Math.round(care / Math.max(1, juggling * 0.75));
+      sys.health = clamp(sys.health + delta);
     } else {
+      sys.health = clamp(sys.health + delta - 8);
       sys.health = clamp(sys.health - 15);
       // someone may reluctantly adopt it (with a learning curve)
       const free = s.employees.filter((e) => !ownedBy(s, e.id).length && SYSTEMS[k].roles.includes(e.role));
@@ -773,8 +851,10 @@ function stepSystems(s: GameState, lines: string[]) {
         makeOwner(s, k, e);
         sys.health = clamp(sys.health - 5);
         lines.push(`${e.name} reluctantly adopted ${SYSTEMS[k].name.toLowerCase()} after reading a 2019 README.`);
-      } else lines.push(`${SYSTEMS[k].emoji} ${SYSTEMS[k].name}: nobody understands it anymore (health ${sys.health}).`);
+      } else lines.push(`${SYSTEMS[k].emoji} ${SYSTEMS[k].name}: nobody understands it anymore.`);
     }
+    const d = sys.health - before;
+    changes.push(`${SYSTEMS[k].emoji} ${SYSTEMS[k].name} ${sys.health} (${d >= 0 ? "+" : "−"}${Math.abs(d)})`);
     if (sys.health < 30 && !s.crises.includes(k)) {
       s.crises.push(k);
       const hit: Record<SystemId, Effects> = {
@@ -792,6 +872,7 @@ function stepSystems(s: GameState, lines: string[]) {
       lines.push(`✅ ${SYSTEMS[k].name} crisis is over.`);
     }
   }
+  lines.push(`Systems: ${changes.join(" · ")}`);
 }
 
 /** Former employees don't just disappear. */

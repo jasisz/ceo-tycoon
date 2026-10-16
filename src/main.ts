@@ -49,6 +49,9 @@ import {
   remember,
   rememberAll,
   removeEmployee,
+  damageSystems,
+  applyPeople,
+  type PersonEffect,
   type Alumnus,
   type Employee,
   type Effects,
@@ -63,6 +66,7 @@ interface Judgement {
   consequences: { cash: number; headcount: number };
   memory: string;
   accepted: boolean;
+  people: PersonEffect[];
   kpis: { quote: string; metric: "revenue" | "headcount" | "valuation" | "hype"; multiplier: number; quarters: number }[];
   narration: string;
   reactions: { speaker: string; line: string }[];
@@ -73,7 +77,7 @@ interface Judgement {
 interface GameEvent {
   title: string;
   description: string;
-  choices: { label: string; outcome: string; effects: Required<Effects> }[];
+  choices: { label: string; outcome: string; effects: Required<Effects>; people?: PersonEffect[] }[];
   mock: boolean;
 }
 
@@ -237,7 +241,7 @@ const ACTIONS: Action[] = [
     sub: () => (s.alumni.length ? `${s.alumni.length} former · ${s.alumni.filter((a) => a.grudge >= 60 || a.blewWhistle).length} angry` : "nobody yet"),
     run: alumni,
   },
-  { id: "pivot", group: "company", icon: "🔀", label: "Pivot", hint: "New product. Hype up, morale down.", enabled: () => true, sub: () => "hype ↑ morale ↓", run: pivot },
+  { id: "pivot", group: "company", icon: "🔀", label: "Pivot", hint: "New product. Hype up, morale down, Product and Sales take a beating.", enabled: () => true, sub: () => "hype ↑ product ↓", run: pivot },
   { id: "realestate", group: "company", icon: "🏢", label: "Real estate", hint: "Move offices, lease another floor or go remote.", enabled: () => true, sub: () => `${office(s).emoji} ${office(s).name.split(" ")[0].toLowerCase()}`, run: realEstate },
   { id: "shop", group: "company", icon: "🛍️", label: "Office shop", hint: "Perks for the office. Costs money, not a decision.", free: true, enabled: () => true, sub: () => "free action", run: shop },
   { id: "ipo", group: "company", icon: "🔔", label: "IPO", hint: `Q6+, valuation ≥ ${fmt(IPO_VALUATION)}. Cash out your equity.`, enabled: () => canIPO(s), sub: () => (canIPO(s) ? "ring the bell!" : `Q6+ · ${fmt(IPO_VALUATION)}`), run: doIpo },
@@ -412,9 +416,14 @@ async function judged(scene_: string, text: string, extra: Record<string, unknow
   return api<Judgement>("/api/judge", { scene: scene_, text, context: describe(s), ...extra });
 }
 
+function peopleHtml(lines: string[]) {
+  return lines.length ? `<div class="memories"><b>Who's affected:</b>${lines.map((l) => `<p>👤 ${esc(l)}</p>`).join("")}</div>` : "";
+}
+
 function judgementHtml(title: string, j: Judgement, extra = "", deltas: Partial<Record<string, number>> = j.deltas) {
+  const touched = j.people?.length ? applyPeople(s, j.people) : [];
   return `<h2>${esc(title)}</h2>
-    <p class="narr">${esc(j.narration)}</p>
+    <p class="narr">${esc(j.narration)}</p>${peopleHtml(touched)}
     ${j.reactions.map((r) => `<p class="quote"><b>${esc(r.speaker)}:</b> “${esc(r.line)}”</p>`).join("")}
     ${extra}
     <div class="chips">${deltaChips(deltas)}<span class="chip neutral">BS-meter ${j.bullshit_score}%</span></div>
@@ -504,6 +513,7 @@ async function pitch() {
 async function layoffs() {
   const n = Math.max(1, Math.round(s.employees.length * 0.1));
   const gone = removeEmployees(s, n, "laid off");
+  damageSystems(s, 6); // fewer hands, same systems
   applyEffects(s, { morale: -15, hype: 6 });
   s.actionsLeft--;
   log(s, `Laid off ${gone.map((e) => e.name).join(", ")}. LinkedIn post: "Hardest decision of my life."`);
@@ -551,6 +561,8 @@ function pivot() {
   const options = PRODUCTS.filter((p) => p !== old);
   s.product = options[Math.floor(Math.random() * options.length)];
   applyEffects(s, { hype: 14, morale: -8 });
+  damageSystems(s, 22, ["product"]);
+  damageSystems(s, 12, ["sales"]);
   s.actionsLeft--;
   log(s, `Pivot! From "${old}" to "${s.product}". Engineering found out from TechCrunch.`);
 }
@@ -891,18 +903,20 @@ async function startQuarter() {
     renderHud();
     const r = await modal(
       `<p class="kicker">Q${s.quarter} event</p><h2>${esc(ev.title)}</h2><p>${esc(ev.description)}</p>
-      <div class="choices">${ev.choices.map((c, i) => `<button class="choice" data-v="choice:${i}">${esc(c.label)}<span>${deltaChips(c.effects)}</span></button>`).join("")}</div>
+      <div class="choices">${ev.choices.map((c, i) => `<button class="choice" data-v="choice:${i}">${esc(c.label)}<span>${deltaChips(c.effects)}${(c.people ?? []).map((p) => chip(`👤 ${p.name.split(" ")[0]}${p.salary_change ? ` ${p.salary_change > 0 ? "+" : ""}${fmt(p.salary_change)}/q` : ""}`, p.mood_change >= 0 ? "good" : "bad")).join("")}</span></button>`).join("")}</div>
       <p class="sub">…or respond in your own words:</p>`,
       [{ label: "Respond with my text", value: "text", primary: true }],
       { input: "Write your own response (the game master will judge it)" },
     );
     if (r.value.startsWith("choice:")) {
       const c = ev.choices[Number(r.value.slice(7))];
-      const { gone } = applyEffects(s, c.effects);
+      const touched = applyPeople(s, c.people);
+      const hc = c.effects.headcount < 0 ? Math.min(0, c.effects.headcount + (touched.left ?? 0)) : c.effects.headcount;
+      const { gone } = applyEffects(s, { ...c.effects, headcount: hc });
       if (c.effects.offshore > 0) noticeZug(s);
       log(s, `${ev.title} → ${c.label}. ${c.outcome}`);
       render();
-      await modal(`<h2>${esc(c.label)}</h2><p class="narr">${esc(c.outcome)}</p><div class="chips">${deltaChips(c.effects)}</div>
+      await modal(`<h2>${esc(c.label)}</h2><p class="narr">${esc(c.outcome)}</p>${peopleHtml(touched)}<div class="chips">${deltaChips(c.effects)}</div>
         ${gone.length ? `<p>Gone: ${gone.map((g) => esc(g.name)).join(", ")}</p>` : ""}`, [{ label: "OK", value: "ok" }]);
     } else {
       loading("The game master is judging your response...");
@@ -911,13 +925,16 @@ async function startQuarter() {
         return [Math.min(...vals), Math.max(...vals)] as [number, number];
       };
       const j = await judged("event", r.text, { eventTitle: `${ev.title}: ${ev.description}`, bounds: { cash: span("cash"), headcount: span("headcount") } });
-      const { gone } = applyEffects(s, { ...j.deltas, ...j.consequences });
+      const touched = applyPeople(s, j.people);
+      j.people = []; // already applied; judgementHtml shouldn't apply them again
+      const hc = j.consequences.headcount < 0 ? Math.min(0, j.consequences.headcount + (touched.left ?? 0)) : j.consequences.headcount;
+      const { gone } = applyEffects(s, { ...j.deltas, ...j.consequences, headcount: hc });
       if (gone.length) log(s, `Gone: ${gone.map((g) => g.name).join(", ")}.`);
       addPromises(j);
       log(s, `${ev.title} → you improvised. ${j.narration}`);
       showReactions(j);
       render();
-      await modal(judgementHtml(ev.title, j, "", { ...j.deltas, ...j.consequences }), [{ label: "OK", value: "ok" }]);
+      await modal(judgementHtml(ev.title, j, peopleHtml(touched), { ...j.deltas, ...j.consequences }), [{ label: "OK", value: "ok" }]);
     }
   });
   gossip();
