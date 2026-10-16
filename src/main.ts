@@ -55,6 +55,10 @@ import {
   type IdentityChange,
   applyPeople,
   nextEpisodeFor,
+  ipoBlocker,
+  payZug,
+  zugSuspicion,
+  ZUG_AMOUNT,
   recordEpisode,
   MAX_EPISODES,
   MAX_OPEN_THREADS,
@@ -254,15 +258,15 @@ const ACTIONS: Action[] = [
   { id: "pivot", group: "company", icon: "🔀", label: "Pivot", hint: "New product. Hype up, morale down, Product and Sales take a beating.", enabled: () => true, sub: () => "hype ↑ product ↓", run: pivot },
   { id: "realestate", group: "company", icon: "🏢", label: "Real estate", hint: "Move offices, lease another floor or go remote.", enabled: () => true, sub: () => `${office(s).emoji} ${office(s).name.split(" ")[0].toLowerCase()}`, run: realEstate },
   { id: "shop", group: "company", icon: "🛍️", label: "Office shop", hint: "Perks for the office. Costs money, not a decision.", free: true, enabled: () => true, sub: () => "free action", run: shop },
-  { id: "ipo", group: "company", icon: "🔔", label: "IPO", hint: `Q6+, valuation ≥ ${fmt(IPO_VALUATION)}. Cash out your equity.`, enabled: () => canIPO(s), sub: () => (canIPO(s) ? "ring the bell!" : `Q6+ · ${fmt(IPO_VALUATION)}`), run: doIpo },
+  { id: "ipo", group: "company", icon: "🔔", label: "IPO", hint: `Q8+, valuation ≥ ${fmt(IPO_VALUATION)} and revenue ≥ 80% of costs. You net ~60% of your stake after lock-up and taxes.`, enabled: () => canIPO(s), sub: () => (canIPO(s) ? "ring the bell!" : `needs ${ipoBlocker(s)}`), run: doIpo },
   {
     id: "offshore",
     group: "shady",
     icon: "🏝️",
     label: "'Consulting fee' to Zug",
-    hint: "$250k from the company to your offshore account. Suspicion +14.",
-    enabled: () => s.cash > 250_000,
-    sub: () => `$250k · suspicion +14 · stash ${fmt(s.offshore)}`,
+    hint: "$250k from the company to your offshore account (Herr Brunner keeps 10%). Each transfer is more suspicious than the last.",
+    enabled: () => s.cash > ZUG_AMOUNT,
+    sub: () => `$250k · suspicion +${zugSuspicion(s)} · stash ${fmt(s.offshore)}`,
     run: offshore,
   },
 ];
@@ -602,10 +606,9 @@ async function pivot() {
 
 function offshore() {
   music.play("zug");
-  applyEffects(s, { cash: -250_000, offshore: 250_000, suspicion: 14 });
+  const susp = payZug(s);
   s.actionsLeft--;
-  log(s, `Paid a $250k "strategic consulting" invoice to a company in Zug.`);
-  noticeZug(s);
+  log(s, `Paid a $250k "strategic consulting" invoice to a company in Zug (Herr Brunner kept 10%). Suspicion +${susp}.`);
   scene.ceoBubble("Strategic consulting. Very strategic.");
   scene.moneyFly();
 }

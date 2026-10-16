@@ -148,6 +148,8 @@ export interface GameState {
   boardDemands: string[]; // reasons the board wants to see you next quarter
   cast: CastMember[];
   threads: Thread[];
+  audits: number; // audits survived at this company; auditors keep a file
+  zugTransfers: number; // "consulting fees" paid at this company
   actionsLeft: number;
   lastPartyQuarter: number;
   lastRaiseQuarter: number;
@@ -228,6 +230,8 @@ export function loadGame(): GameState | null {
     s.crises ??= [];
     s.cast ??= structuredClone(DEFAULT_CAST);
     s.threads ??= [];
+    s.audits ??= 0;
+    s.zugTransfers ??= 0;
     if (!s.systems) {
       s.systems = freshSystems();
       assignOwners(s);
@@ -376,6 +380,8 @@ export function newCompany(prev?: GameState): GameState {
     boardDemands: [],
     cast: prev?.cast ?? structuredClone(DEFAULT_CAST),
     threads: [],
+    audits: 0,
+    zugTransfers: 0,
     actionsLeft: ACTIONS_PER_QUARTER,
     lastPartyQuarter: -10,
     lastRaiseQuarter: -10,
@@ -656,6 +662,20 @@ export function rehire(s: GameState, alumnusId: number) {
   log(s, `${a.name} is back as a contractor (${fmt(payOf(e))}/q). ${a.owned.length ? `${a.owned.map((k) => SYSTEMS[k].emoji).join("")} has an owner again.` : ""}`);
 }
 
+export const ZUG_AMOUNT = 250_000;
+export const ZUG_FEE = 0.1; // Herr Brunner's discretion is not free
+export const zugSuspicion = (s: GameState) => 10 + 3 * s.zugTransfers; // the pattern gets harder to miss
+
+export function payZug(s: GameState) {
+  const susp = zugSuspicion(s);
+  applyEffects(s, { cash: -ZUG_AMOUNT, offshore: Math.round(ZUG_AMOUNT * (1 - ZUG_FEE)), suspicion: susp });
+  s.zugTransfers++;
+  const brunner = s.cast.find((c) => c.name === "Herr Brunner");
+  if (brunner) remember(brunner, s.quarter, `Received "consulting fee" #${s.zugTransfers} from ${s.company}. Kept 10%.`);
+  noticeZug(s);
+  return susp;
+}
+
 /** The person closest to the money notices the "consulting" invoices. */
 export function noticeZug(s: GameState) {
   const ownerId = s.systems.billing.owner;
@@ -796,21 +816,26 @@ export function endQuarter(s: GameState): QuarterReport {
     lines.push(`${quit.map((e) => e.name).join(", ")} quit. Their farewell Slack messages were... pointed.`);
   }
 
-  // audit
-  if (s.suspicion > 50 && Math.random() < (s.suspicion - 50) / 40) {
-    if (s.suspicion >= 75) {
+  // audit: more likely the more suspicious you look and the thicker their file on you;
+  // whether they find anything depends on suspicion and on whether someone talked
+  const auditChance = s.suspicion > 40 ? (s.suspicion - 40) / 50 + s.audits * 0.05 : 0;
+  if (Math.random() < auditChance) {
+    s.audits++;
+    const whistleblower = s.alumni.some((a) => a.blewWhistle);
+    const findChance = s.offshore > 0 ? Math.max(0, (s.suspicion - 42) / 55) + (whistleblower ? 0.3 : 0) + (s.audits - 1) * 0.04 : 0;
+    if (Math.random() < findChance) {
       s.over = {
         win: false,
         canContinue: false,
         title: "Arrested at the airport",
-        text: `Auditors followed the money to your offshore account (${fmt(s.offshore)}). You get a Netflix documentary instead of FIRE.`,
+        text: `Auditors followed the money to your offshore account (${fmt(s.offshore)}).${whistleblower ? " Someone had kept copies of the invoices." : ""} You get a Netflix documentary instead of FIRE.`,
       };
       return { lines, gone };
     }
-    s.suspicion = clamp(s.suspicion - 25);
+    s.suspicion = clamp(s.suspicion - 10);
     s.hype = clamp(s.hype - 12);
     s.reputation = clamp(s.reputation - 5);
-    lines.push("Surprise audit! They found nothing conclusive. Investors are spooked anyway.");
+    lines.push(`🔍 Audit #${s.audits}! They found nothing conclusive${s.offshore > 0 ? " — this time" : ""}. They're keeping the file open.`);
   }
 
   if (netWorth(s) >= FIRE_TARGET) {
@@ -1035,18 +1060,31 @@ function stepKpis(s: GameState, lines: string[]) {
 }
 
 /** Honest exit: IPO pays out the CEO's equity. */
+export const IPO_MIN_QUARTER = 8;
+/** Public markets want a path to profitability, not just hype. */
+export const ipoProfitable = (s: GameState) => quarterlyRevenue(s) >= quarterlyCosts(s) * 0.8;
+
 export function canIPO(s: GameState) {
-  return s.quarter >= 6 && valuation(s) >= IPO_VALUATION && s.cash > 0;
+  return s.quarter >= IPO_MIN_QUARTER && valuation(s) >= IPO_VALUATION && s.cash > 0 && ipoProfitable(s);
+}
+
+/** What's still missing for an IPO, for the UI. */
+export function ipoBlocker(s: GameState) {
+  if (s.quarter < IPO_MIN_QUARTER) return `Q${IPO_MIN_QUARTER}+`;
+  if (valuation(s) < IPO_VALUATION) return `valuation ${fmt(IPO_VALUATION)}`;
+  if (!ipoProfitable(s)) return "path to profit";
+  return null;
 }
 
 export function ipo(s: GameState) {
-  const payout = Math.round(valuation(s) * s.equity);
+  // lock-up period, taxes and the bankers' cut: you see about 60% of the paper value
+  const payout = Math.round(valuation(s) * s.equity * 0.6);
   s.savings += payout;
   s.reputation = clamp(s.reputation + 20);
   s.over = {
     win: netWorth(s) >= FIRE_TARGET,
     canContinue: netWorth(s) < FIRE_TARGET,
     title: "IPO! The bell has been rung",
-    text: `${s.company} went public at ${fmt(valuation(s))}. Your ${(s.equity * 100).toFixed(1)}% stake is worth ${fmt(payout)}.${netWorth(s) >= FIRE_TARGET ? " FIRE achieved - you never open Slack again." : " Not enough for FIRE yet... time for another company."}`,
+    text: `${s.company} went public at ${fmt(valuation(s))}. After lock-up, taxes and the bankers, your ${(s.equity * 100).toFixed(1)}% stake nets you ${fmt(payout)}.${netWorth(s) >= FIRE_TARGET ? " FIRE achieved - you never open Slack again." : " Not enough for FIRE yet... time for another company."}`,
   };
 }
