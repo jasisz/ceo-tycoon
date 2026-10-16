@@ -70,7 +70,9 @@ let spent = 0;
  * state (event prefetch, gossip, a judgement, the shops...) reads it at ~0.1x instead of paying again.
  */
 async function ask(label: string, user: string, schema: Record<string, unknown>, maxTokens = 2000, context = "", fast = false) {
-  const model = fast ? FAST_MODEL : MODEL;
+  // per-task override: CEO_MODEL_EVENT, CEO_MODEL_JUDGE, CEO_MODEL_GOSSIP... (judge covers every judge:* scene)
+  const task = label.split(":")[0].toUpperCase();
+  const model = process.env[`CEO_MODEL_${task}`] || (fast ? FAST_MODEL : MODEL);
   // the client marks where the slow-changing state ends; only that part is worth caching
   const [stable, live = ""] = context.split("\n<<<live>>>\n");
   const system: Anthropic.Beta.Messages.BetaTextBlockParam[] = [{ type: "text", text: WORLD }];
