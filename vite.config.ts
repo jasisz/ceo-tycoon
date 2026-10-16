@@ -1,6 +1,6 @@
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { generateEvent, generateGossip, isOffline, judge } from "./server/llm";
+import { generateEpilogue, generateEvent, generateGossip, isOffline, judge } from "./server/llm";
 
 // Tiny JSON API mounted on the Vite dev server, so the API key never reaches the browser.
 function readJson(req: IncomingMessage): Promise<any> {
@@ -26,7 +26,8 @@ function send(res: ServerResponse, data: unknown, status = 200) {
 function gameMasterApi(): Plugin {
   const routes: Record<string, (body: any) => Promise<unknown>> = {
     "/api/judge": (b) => judge(b),
-    "/api/event": (b) => generateEvent(String(b.context ?? ""), b.recentTitles ?? []),
+    "/api/event": (b) => generateEvent(String(b.context ?? ""), b.recentTitles ?? [], b.story),
+    "/api/epilogue": (b) => generateEpilogue(String(b.context ?? ""), String(b.ending ?? ""), String(b.history ?? "")),
     "/api/gossip": (b) => generateGossip(String(b.context ?? ""), b.names ?? []),
     "/api/status": async () => ({ offline: isOffline() }),
   };

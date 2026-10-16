@@ -54,6 +54,10 @@ import {
   changeIdentity,
   type IdentityChange,
   applyPeople,
+  nextEpisodeFor,
+  recordEpisode,
+  MAX_EPISODES,
+  MAX_OPEN_THREADS,
   type PersonEffect,
   type Alumnus,
   type Employee,
@@ -79,6 +83,7 @@ interface Judgement {
   mock: boolean;
 }
 interface GameEvent {
+  storyline?: { title: string; ends: boolean };
   title: string;
   description: string;
   choices: { label: string; outcome: string; effects: Required<Effects>; people?: PersonEffect[]; company?: IdentityChange }[];
@@ -903,6 +908,8 @@ async function ceoPanel() {
       <p>Reputation: <b>${s.reputation}/100</b></p>
       <p>Net worth: <b>${fmt(netWorth(s))}</b> of ${fmt(FIRE_TARGET)} FIRE target</p>
     </div>
+    ${s.threads.length ? `<h3>📖 Storylines</h3>${s.threads.map((t) => `<details><summary><b>${esc(t.title)}</b> · ${t.open ? "ongoing" : "closed"} · ${t.episodes.length} ep.</summary>${t.episodes.map((e) => `<p class="sub">${esc(e)}</p>`).join("")}</details>`).join("")}` : ""}
+    ${s.cast.length ? `<h3>🎭 People who know you</h3>${s.cast.map((c) => `<p>• <b>${esc(c.name)}</b> — ${esc(c.role)}${c.history.length ? `<br><span class="sub">${esc(c.history[c.history.length - 1])}</span>` : ""}</p>`).join("")}` : ""}
     ${s.kpis.length ? `<h3>What you promised investors</h3>${s.kpis.map((k) => `<p>• “${esc(k.quote)}” — ${KPI_LABEL[k.metric]} ${k.metric === "revenue" || k.metric === "valuation" ? fmt(k.target) : k.target} by Q${k.dueQuarter}</p>`).join("")}` : ""}
     ${s.promises.length ? `<h3>Open promises</h3>${s.promises.map((p) => `<p>• ${esc(p.text)} — due Q${p.dueQuarter}, ~${fmt(p.cost)}</p>`).join("")}` : ""}`,
     [
@@ -915,12 +922,38 @@ async function ceoPanel() {
 
 // ---------- quarter loop ----------
 
+/** Ask for this quarter's event; the engine decides whether it's the next episode of a storyline. */
+function requestEvent() {
+  const thread = nextEpisodeFor(s);
+  const story = {
+    continueTitle: thread?.title,
+    final: thread ? thread.episodes.length >= MAX_EPISODES - 1 : false,
+    canStart: !thread && s.threads.filter((t) => t.open).length < MAX_OPEN_THREADS,
+  };
+  return api<GameEvent>("/api/event", { context: describe(s), recentTitles: s.recentEvents, story });
+}
+
+/** File the resolved event under its storyline (if it has one). */
+function storyEpisode(ev: GameEvent, summary: string) {
+  if (!ev.storyline?.title) return;
+  const r = recordEpisode(s, ev.storyline.title, `${ev.title} — ${summary}`, ev.storyline.ends);
+  if (r && r.episode === 1) log(s, `📖 New storyline: "${r.thread.title}".`);
+}
+
+function storyKicker(ev: GameEvent) {
+  const t = ev.storyline?.title;
+  if (!t) return `Q${s.quarter} event`;
+  const existing = s.threads.find((x) => x.open && x.title.toLowerCase() === t.toLowerCase());
+  const n = (existing?.episodes.length ?? 0) + 1;
+  return `📖 ${esc(t)} · episode ${n}${ev.storyline!.ends ? " · finale" : ""}`;
+}
+
 // The next event is generated in the background while the player reads the
 // quarterly report / intro screen, so the LLM latency is mostly hidden.
 let pendingEvent: Promise<GameEvent> | null = null;
 
 function prefetchEvent() {
-  const p = api<GameEvent>("/api/event", { context: describe(s), recentTitles: s.recentEvents });
+  const p = requestEvent();
   p.catch(() => {}); // surfaced when awaited
   pendingEvent = p;
 }
@@ -929,13 +962,13 @@ async function startQuarter() {
   await withBusy(async () => {
     if (s.boardDemands.length) await boardMeeting();
     loading(`Q${s.quarter}: something is happening at ${s.company}...`);
-    const ev = await (pendingEvent ?? api<GameEvent>("/api/event", { context: describe(s), recentTitles: s.recentEvents }));
+    const ev = await (pendingEvent ?? requestEvent());
     pendingEvent = null;
     s.recentEvents = [ev.title, ...s.recentEvents].slice(0, 6);
     s.eventResolvedQuarter = s.quarter; // a reload after this point won't re-roll the event
     renderHud();
     const r = await modal(
-      `<p class="kicker">Q${s.quarter} event</p><h2>${esc(ev.title)}</h2><p>${esc(ev.description)}</p>
+      `<p class="kicker">${storyKicker(ev)}</p><h2>${esc(ev.title)}</h2><p>${esc(ev.description)}</p>
       <div class="choices">${ev.choices.map((c, i) => `<button class="choice" data-v="choice:${i}">${esc(c.label)}<span>${deltaChips(c.effects)}${c.company?.name || c.company?.product ? chip(`🔀 ${c.company.name || c.company.product}`, "neutral") : ""}${(c.people ?? []).map((p) => chip(`👤 ${p.name.split(" ")[0]}${p.salary_change ? ` ${p.salary_change > 0 ? "+" : ""}${fmt(p.salary_change)}/q` : ""}`, p.mood_change >= 0 ? "good" : "bad")).join("")}</span></button>`).join("")}</div>
       <p class="sub">…or respond in your own words:</p>`,
       [{ label: "Respond with my text", value: "text", primary: true }],
@@ -949,6 +982,7 @@ async function startQuarter() {
       const { gone } = applyEffects(s, { ...c.effects, headcount: hc });
       if (c.effects.offshore > 0) noticeZug(s);
       log(s, `${ev.title} → ${c.label}. ${c.outcome}`);
+      storyEpisode(ev, `CEO chose "${c.label}": ${c.outcome}`);
       render();
       await modal(`<h2>${esc(c.label)}</h2><p class="narr">${esc(c.outcome)}</p>${identity ? `<p class="big">🔀 ${esc(identity[0].toUpperCase() + identity.slice(1))}.</p>` : ""}${peopleHtml(touched)}<div class="chips">${deltaChips(c.effects)}</div>
         ${gone.length ? `<p>Gone: ${gone.map((g) => esc(g.name)).join(", ")}</p>` : ""}`, [{ label: "OK", value: "ok" }]);
@@ -966,6 +1000,7 @@ async function startQuarter() {
       if (gone.length) log(s, `Gone: ${gone.map((g) => g.name).join(", ")}.`);
       addPromises(j);
       log(s, `${ev.title} → you improvised. ${j.narration}`);
+      storyEpisode(ev, `CEO improvised: "${r.text.slice(0, 160)}". ${j.narration}`);
       showReactions(j);
       render();
       await modal(judgementHtml(ev.title, j, peopleHtml(touched), { ...j.deltas, ...j.consequences }), [{ label: "OK", value: "ok" }]);
@@ -1015,11 +1050,40 @@ async function nextQuarter() {
   await startQuarter();
 }
 
+interface Epilogue {
+  headline: string;
+  article: string;
+  controversies: string[];
+  linkedin: { name: string; role: string; post: string }[];
+}
+
+function epilogueHtml(e: Epilogue | null) {
+  if (!e) return "";
+  return `<div class="epilogue">
+    <p class="kicker">How they'll remember ${esc(s.company)}</p>
+    <h3>📰 ${esc(e.headline)}</h3>
+    <p>${esc(e.article)}</p>
+    ${e.controversies.length ? `<h4>Wikipedia · Controversies</h4>${e.controversies.map((c) => `<p>• ${esc(c)}</p>`).join("")}` : ""}
+    ${e.linkedin.map((l) => `<div class="li"><b>${esc(l.name)}</b> <small>${esc(l.role)}</small><p>${esc(l.post)}</p></div>`).join("")}
+  </div>`;
+}
+
 async function gameOver() {
   const o = s.over!;
+  loading(`Writing ${s.company}'s obituary...`);
+  const epilogue = await api<Epilogue & { mock: boolean }>("/api/epilogue", {
+    context: describe(s),
+    ending: `${o.title}. ${o.text}`,
+    history: [
+      ...s.log,
+      ...s.threads.map((t) => `Storyline "${t.title}": ${t.episodes.join(" → ")}`),
+      ...s.alumni.map((a) => `${a.name} (${a.role}) ${a.reason} in Q${a.leftQuarter}; remembers: ${a.history.slice(-3).join(" / ")}`),
+    ].join("\n"),
+  }).catch(() => null);
   const r = await modal(
     `<p class="kicker">${o.win ? "You win" : "Game over"}</p><h2>${esc(o.title)}</h2><p>${esc(o.text)}</p>
-    <p>Final net worth: <b>${fmt(netWorth(s))}</b> after ${s.career} compan${s.career === 1 ? "y" : "ies"}.</p>`,
+    <p>Final net worth: <b>${fmt(netWorth(s))}</b> after ${s.career} compan${s.career === 1 ? "y" : "ies"}.</p>
+    ${epilogueHtml(epilogue)}`,
     o.canContinue
       ? [
           { label: "Restart from scratch", value: "restart" },

@@ -102,7 +102,7 @@ export interface JudgeRequest {
 const peopleSchema = {
   type: "array",
   description:
-    "Specific employees this directly affects, by their EXACT name from the roster. Empty if nobody in particular. E.g. someone gets a raise, is humiliated, is promoted, is blamed.",
+    "Specific employees (or recurring characters) this directly affects, by their EXACT name from the roster or the recurring characters list. Empty if nobody in particular. E.g. someone gets a raise, is humiliated, is promoted, is blamed.",
   items: {
     type: "object",
     properties: {
@@ -346,6 +346,16 @@ const effectSchema = {
 const eventSchema = {
   type: "object",
   properties: {
+    storyline: {
+      type: "object",
+      description: "Which multi-quarter storyline this event belongs to, if any.",
+      properties: {
+        title: { type: "string", description: "Storyline title, e.g. 'The Union'. Empty string for a standalone event." },
+        ends: { type: "boolean", description: "true if this episode resolves the storyline for good" },
+      },
+      required: ["title", "ends"],
+      additionalProperties: false,
+    },
     title: { type: "string", description: "Short punchy headline" },
     description: { type: "string", description: "2-3 sentences setting up the situation" },
     choices: {
@@ -365,7 +375,7 @@ const eventSchema = {
       },
     },
   },
-  required: ["title", "description", "choices"],
+  required: ["storyline", "title", "description", "choices"],
   additionalProperties: false,
 } as const;
 
@@ -378,6 +388,7 @@ const Effects = z.object({
   headcount: z.number(),
 });
 const GameEvent = z.object({
+  storyline: z.object({ title: z.string(), ends: z.boolean() }).optional(),
   title: z.string(),
   description: z.string(),
   choices: z.array(z.object({ label: z.string(), outcome: z.string(), effects: Effects, people: PeopleEffects.optional(), company: Company.optional() })).min(2),
@@ -438,11 +449,27 @@ export const FALLBACK_EVENTS: GameEvent[] = [
 ];
 
 function mockEvent(): GameEvent {
-  return FALLBACK_EVENTS[Math.floor(Math.random() * FALLBACK_EVENTS.length)];
+  return { storyline: { title: "", ends: false }, ...FALLBACK_EVENTS[Math.floor(Math.random() * FALLBACK_EVENTS.length)] };
 }
 
-export function generateEvent(context: string, recentTitles: string[]) {
-  const user = `Invent this quarter's random event for the CEO. It should react to the current state of the company (low morale, high suspicion, shrinking runway, weird pivots, broken promises...) or be a classic startup absurdity (license shortages, English lessons, sudden urge to pivot or buy an unrelated company, reorganisations, office plants, the co-CEO proposal, a viral Glassdoor review...).
+export interface StoryDirection {
+  continueTitle?: string; // must continue this storyline
+  final?: boolean; // ...and resolve it
+  canStart: boolean; // room for a new storyline
+}
+
+function storyBrief(d?: StoryDirection) {
+  if (d?.continueTitle)
+    return `This quarter's event MUST be the next episode of the ongoing storyline "${d.continueTitle}" (see "Ongoing storylines" in the game state). Escalate or twist it as a consequence of what the CEO chose last time; set storyline.title to exactly "${d.continueTitle}".${d.final ? " This is the FINAL episode: resolve it, set storyline.ends=true." : ""}`;
+  if (d?.canStart)
+    return `If this event has legs as a story that could continue over 2-4 quarters (a union forming, an office romance, someone writing a tell-all book, a feud with the competitor, the journalist's investigation...), give it a storyline title; otherwise leave storyline.title empty. Recurring characters may appear.`;
+  return "Make it a standalone event: storyline.title must be empty.";
+}
+
+export function generateEvent(context: string, recentTitles: string[], story?: StoryDirection) {
+  const user = `${storyBrief(story)}
+
+Invent this quarter's event for the CEO. It should react to the current state of the company (low morale, high suspicion, shrinking runway, weird pivots, broken promises...) or be a classic startup absurdity (license shortages, English lessons, sudden urge to pivot or buy an unrelated company, reorganisations, office plants, the co-CEO proposal, a viral Glassdoor review...).
 Make effects proportional and consistent with the outcomes. A choice may rename the company or change what it makes (fill company) - e.g. a panic rebrand to something with AI in the name - but only when the choice is literally that. If the event is about specific employees, use their exact names from the roster and record, per choice, what happens to them in "people" (a raise must have a salary_change, a resolved grievance a new_quirk). Don't repeat these recent events: ${recentTitles.join("; ") || "none"}.
 
 Game state:
@@ -453,6 +480,59 @@ ${context}`;
       return { ...ev, choices: ev.choices.slice(0, 3).map((c) => ({ ...c, effects: clampEffects(c.effects), people: clampPeople(c.people ?? []), company: clampCompany(c.company) })) };
     },
     mockEvent,
+  );
+}
+
+// ---------- epilogue: how the company will be remembered ----------
+
+const epilogueSchema = {
+  type: "object",
+  properties: {
+    headline: { type: "string", description: "Tech-press headline about how it ended" },
+    article: { type: "string", description: "4-5 sentence news article, citing specific things that actually happened in the game" },
+    controversies: { type: "array", description: "3-4 bullet points for the company's Wikipedia 'Controversies' section, based on real events", items: { type: "string" } },
+    linkedin: {
+      type: "array",
+      description: "3 LinkedIn posts by real former/current employees or recurring characters reacting, in their own voice, referencing their actual history",
+      items: {
+        type: "object",
+        properties: { name: { type: "string" }, role: { type: "string" }, post: { type: "string" } },
+        required: ["name", "role", "post"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["headline", "article", "controversies", "linkedin"],
+  additionalProperties: false,
+} as const;
+
+const Epilogue = z.object({
+  headline: z.string(),
+  article: z.string(),
+  controversies: z.array(z.string()),
+  linkedin: z.array(z.object({ name: z.string(), role: z.string(), post: z.string() })),
+});
+
+export function generateEpilogue(context: string, ending: string, history: string) {
+  const user = `The CEO's time at this company just ended: ${ending}
+Write how the world will remember it. Be specific: use real names, real events, real numbers from the history below. Satirical, a little cruel, never generic.
+
+Game state:
+${context}
+
+Company history (newest first):
+${history.slice(0, 6000)}`;
+  return withFallback(
+    async () => {
+      const e = Epilogue.parse(await ask(WORLD, user, epilogueSchema, 2500));
+      return { ...e, controversies: e.controversies.slice(0, 4), linkedin: e.linkedin.slice(0, 3) };
+    },
+    () => ({
+      headline: "[mock] Startup no longer exists, sources confirm",
+      article: "The company had a journey. It was incredible, according to the CEO's LinkedIn.",
+      controversies: ["Allegedly paid 'consulting fees' to a company in Zug."],
+      linkedin: [{ name: "A former employee", role: "Ex-everything", post: "Grateful for the lessons. Especially the ones about promises." }],
+    }),
   );
 }
 

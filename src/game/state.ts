@@ -72,6 +72,30 @@ export interface Alumnus {
   refusedQuarter?: number;
 }
 
+/** Recurring characters who follow the CEO from company to company. */
+export interface CastMember {
+  name: string;
+  role: string;
+  history: string[];
+}
+
+/** A storyline that unfolds over several quarters' events. */
+export interface Thread {
+  title: string;
+  episodes: string[]; // what happened in each episode, including what the CEO chose
+  lastQuarter: number;
+  open: boolean;
+}
+
+export const MAX_OPEN_THREADS = 2;
+export const MAX_EPISODES = 4;
+
+const DEFAULT_CAST: CastMember[] = [
+  { name: "Chad Brennan", role: "lead investor at Fleece Ventures, always in a vest", history: [] },
+  { name: "Priya Raman", role: "tech journalist at TechCrunchy who has been following your career", history: [] },
+  { name: "Herr Brunner", role: "private banker in Zug, extremely discreet, extremely expensive", history: [] },
+];
+
 export type KpiMetric = "revenue" | "headcount" | "valuation" | "hype";
 
 export interface Kpi {
@@ -122,6 +146,8 @@ export interface GameState {
   alumni: Alumnus[];
   kpis: Kpi[];
   boardDemands: string[]; // reasons the board wants to see you next quarter
+  cast: CastMember[];
+  threads: Thread[];
   actionsLeft: number;
   lastPartyQuarter: number;
   lastRaiseQuarter: number;
@@ -200,6 +226,8 @@ export function loadGame(): GameState | null {
     s.kpis ??= [];
     s.boardDemands ??= [];
     s.crises ??= [];
+    s.cast ??= structuredClone(DEFAULT_CAST);
+    s.threads ??= [];
     if (!s.systems) {
       s.systems = freshSystems();
       assignOwners(s);
@@ -291,7 +319,14 @@ export function applyPeople(s: GameState, people: PersonEffect[] = []) {
   lines.left = 0;
   for (const p of people) {
     const e = findEmployee(s, p.name);
-    if (!e) continue;
+    if (!e) {
+      const c = s.cast.find((x) => x.name.toLowerCase() === p.name.trim().toLowerCase());
+      if (c && p.memory) {
+        remember(c, s.quarter, p.memory);
+        lines.push(`${c.name}: ${p.memory}`);
+      }
+      continue;
+    }
     if (p.memory) remember(e, s.quarter, p.memory);
     if (p.salary_change) e.salary = Math.max(25_000, e.salary + p.salary_change);
     if (p.mood_change) e.moodOffset = clamp(e.moodOffset + p.mood_change, -50, 50);
@@ -339,6 +374,8 @@ export function newCompany(prev?: GameState): GameState {
     alumni: [],
     kpis: [],
     boardDemands: [],
+    cast: prev?.cast ?? structuredClone(DEFAULT_CAST),
+    threads: [],
     actionsLeft: ACTIONS_PER_QUARTER,
     lastPartyQuarter: -10,
     lastRaiseQuarter: -10,
@@ -349,6 +386,12 @@ export function newCompany(prev?: GameState): GameState {
   };
   for (let i = 0; i < start.staff; i++) s.employees.push(makeEmployee(i, 1));
   assignOwners(s);
+  // the angriest person you left behind now runs a competitor
+  const nemesis = prev?.alumni.filter((a) => a.grudge >= 50 && !s.cast.some((c) => c.name === a.name)).sort((a, b) => b.grudge - a.grudge)[0];
+  if (nemesis) {
+    s.cast.push({ name: nemesis.name, role: `CEO of a competitor; used to work for you at ${prev!.company} until you ${nemesis.reason === "quit" ? "drove them out" : nemesis.reason === "fired" ? "fired them" : "laid them off"}`, history: nemesis.history.slice(-4) });
+    log(s, `Your former employee ${nemesis.name} now runs a competitor. They have a long memory.`);
+  }
   log(
     s,
     prev
@@ -672,6 +715,8 @@ export function describe(s: GameState) {
       .slice(0, 16)
       .map((e) => `${e.name} (${e.role}, mood ${employeeMood(s, e)}, ${fmt(payOf(e))}/q, ${e.quirk})`)
       .join("; ")}${s.employees.length > 16 ? ` and ${s.employees.length - 16} more` : ""}.`,
+    `Recurring characters in the CEO's life: ${s.cast.map((c) => `${c.name} (${c.role}${c.history.length ? `; remembers: ${c.history.slice(-2).join(" / ")}` : ""})`).join("; ")}.`,
+    s.threads.some((t) => t.open) ? `Ongoing storylines: ${s.threads.filter((t) => t.open).map((t) => `"${t.title}" so far: ${t.episodes.join(" → ")}`).join(" || ")}.` : "",
     `Recent log: ${s.log.slice(0, 4).join(" | ")}`,
   ]
     .filter(Boolean)
@@ -845,6 +890,33 @@ export function changeIdentity(s: GameState, c?: IdentityChange) {
   rememberAll(s, `Found out ${line}.`);
   log(s, `🔀 ${line[0].toUpperCase()}${line.slice(1)}. ${product ? "Engineering found out from TechCrunch." : "Marketing ordered new hoodies."}`);
   return line;
+}
+
+// ---------- storylines ----------
+
+/** Which storyline (if any) this quarter's event should continue. */
+export function nextEpisodeFor(s: GameState): Thread | null {
+  const open = s.threads.filter((t) => t.open && t.lastQuarter < s.quarter);
+  if (!open.length || Math.random() > 0.55) return null;
+  return open.sort((a, b) => a.lastQuarter - b.lastQuarter)[0];
+}
+
+/** Record what happened in an event that belongs to a storyline. Returns the thread and episode number. */
+export function recordEpisode(s: GameState, title: string, summary: string, ends: boolean) {
+  if (!title) return null;
+  let t = s.threads.find((x) => x.open && x.title.toLowerCase() === title.toLowerCase());
+  if (!t) {
+    if (s.threads.filter((x) => x.open).length >= MAX_OPEN_THREADS) return null;
+    t = { title, episodes: [], lastQuarter: s.quarter, open: true };
+    s.threads.push(t);
+  }
+  t.episodes.push(`Q${s.quarter}: ${summary}`);
+  t.lastQuarter = s.quarter;
+  if (ends || t.episodes.length >= MAX_EPISODES) {
+    t.open = false;
+    log(s, `📖 Storyline closed: "${t.title}" (${t.episodes.length} episodes).`);
+  }
+  return { thread: t, episode: t.episodes.length };
 }
 
 /** Hit one or all systems (pivots, layoffs...). */
