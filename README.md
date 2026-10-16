@@ -77,7 +77,11 @@ Default game master model is `claude-sonnet-5-5` (judgements, events, epilogues)
 ghostwriting, shop catalogues, candidates) runs on `claude-haiku-5-5`. Override with `CEO_MODEL` and
 `CEO_FAST_MODEL` in `.env`, or per task (`CEO_MODEL_EVENT`, `CEO_MODEL_JUDGE`, `CEO_MODEL_GOSSIP`... see `.env.example`). The slow-changing part of the game state (who's who, the story so far) is sent as a
 cached system block, so calls within a quarter mostly read it from the prompt cache. The dev server logs
-tokens, cache hits and a running cost estimate for every call (`[llm] ...`); a quarter typically costs a few cents.
+tokens, cache hits and a running cost estimate for every call (`[llm] ...`).
+
+**What a game costs:** with the defaults, about 5 cents per quarter (measured: 4 quarters with an
+event, a speech, a pitch or interview and some shopping each came to $0.23), so a full run to FIRE
+(20–40 quarters) is roughly **$1–2** in API credits. Free-text judgements and events are ~95% of it.
 
 ## License
 
