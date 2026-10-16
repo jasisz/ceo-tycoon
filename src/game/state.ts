@@ -982,17 +982,38 @@ export function applyEffects(s: GameState, e: Effects): { hired: number; gone: E
 }
 
 /** Compact state description fed to the LLM. */
+/** Marks the end of the slow-changing part of describe(): the server caches everything above it. */
+export const STATE_SPLIT = "\n<<<live>>>\n";
+
+/**
+ * The game state for the LLM, in two parts: what rarely changes (who everyone is, the story so far)
+ * and the live numbers. Keeping the first part byte-identical between calls lets the API cache it.
+ */
 export function describe(s: GameState) {
   const runway = runwayQuarters(s);
-  return [
-    `Company: ${s.company}. Product: ${s.product}.${s.founding ? ` Origin: ${s.founding}` : ""} Quarter ${s.quarter}. CEO's company #${s.career}.${s.formerly.length ? ` Formerly: ${s.formerly.slice(0, 3).join("; ")}.` : ""}`,
-    `Employees: ${s.employees.length}. Morale ${s.morale}/100. Investor hype ${s.hype}/100. Board suspicion ${s.suspicion}/100.`,
+  const stable = [
+    `Company: ${s.company}. Product: ${s.product}.${s.founding ? ` Origin: ${s.founding}` : ""} CEO's company #${s.career}.${s.formerly.length ? ` Formerly: ${s.formerly.slice(0, 3).join("; ")}.` : ""}`,
+    `Roster: ${s.employees
+      .slice(0, 16)
+      .map((e) => `${e.name} (${titleOf(e)}, ${e.quirk})`)
+      .join("; ")}${s.employees.length > 16 ? ` and ${s.employees.length - 16} more` : ""}.`,
+    describeOrg(s),
+    `Recurring characters in the CEO's life: ${s.cast.map((c) => `${c.name} (${c.role})`).join("; ")}.`,
+    s.alumni.length ? `Former employees: ${s.alumni.slice(0, 5).map((a) => `${a.name} (${a.reason} Q${a.leftQuarter}${a.atCompetitor ? ", now at a competitor" : ""}${a.grudge > 60 ? ", holds a grudge" : ""})`).join("; ")}.` : "",
+    s.threads.some((t) => t.open) ? `Ongoing storylines: ${s.threads.filter((t) => t.open).map((t) => `"${t.title}" so far: ${t.episodes.join(" → ")}`).join(" || ")}.` : "",
+    describeLifestyle(s),
+    s.cfo && s.employees.some((e) => e.name === s.cfo) ? `${s.cfo} is the CFO the board appointed over the CEO's objection; he reports every outgoing payment to the board.` : "",
+    s.liquidationPref || s.guarantee ? `Terms the CEO signed with investors:${s.liquidationPref ? ` ${fmt(s.liquidationPref)} liquidation preference;` : ""}${s.guarantee ? ` personally guaranteed ${fmt(s.guarantee)} of the debt;` : ""}`.replace(/;$/, ".") : "",
+  ];
+  const live = [
+    `Quarter ${s.quarter}. Employees: ${s.employees.length}. Morale ${s.morale}/100. Investor hype ${s.hype}/100. Board suspicion ${s.suspicion}/100.`,
     `Cash ${fmt(s.cash)}, runway ${runway === Infinity ? "profitable" : `${runway.toFixed(1)} quarters`}. Valuation ${fmt(valuation(s))}.`,
     `CEO secret offshore account: ${fmt(s.offshore)}. CEO reputation ${s.reputation}/100.`,
     `Office: ${office(s).name}${s.floors ? " (+ extra floor)" : ""}, ${capacity(s) === Infinity ? "no desks" : `${capacity(s)} desks`}${hotDeskers(s) ? `, ${hotDeskers(s)} people have no desk and are hot-desking on beanbags` : ""}.`,
-    describeOrg(s),
-    describeLifestyle(s),
-    s.cfo && s.employees.some((e) => e.name === s.cfo) ? `${s.cfo} is the CFO the board appointed over the CEO's objection; he reports every outgoing payment to the board.` : "",
+    `Moods and pay: ${s.employees
+      .slice(0, 16)
+      .map((e) => `${e.name.split(" ")[0]} ${employeeMood(s, e)} (${fmt(payOf(e))}/q)`)
+      .join(", ")}.`,
     (s.payFrozenUntil ?? 0) > s.quarter ? `The board froze the CEO's salary until Q${s.payFrozenUntil}.` : `The CEO pays themselves ${fmt(s.ceoSalary)} a quarter (a board would call ~${fmt(fairCeoPay(s))} reasonable here).`,
     s.upgrades.length ? `Office perks the CEO bought: ${ownedUpgrades(s).map((u) => (isOldNews(s, u.id) ? `${u.gossip} (old news, nobody cares anymore)` : `${u.gossip} (new)`)).join(", ")}.` : "No office perks.",
     s.promises.length ? `Open CEO promises: ${s.promises.map((p) => `"${p.text}" due Q${p.dueQuarter}`).join("; ")}.` : "No open promises.",
@@ -1001,19 +1022,11 @@ export function describe(s: GameState) {
       return `${SYSTEMS[k].name} ${s.systems[k].health}/100 (${o ? `only ${o.name} understands it` : "NOBODY understands it"})`;
     }).join("; ")}.`,
     s.crises.length ? `ONGOING CRISES: ${s.crises.map((k) => SYSTEMS[k].crisis).join(" ")}` : "",
-    s.liquidationPref || s.guarantee ? `Terms the CEO signed with investors:${s.liquidationPref ? ` ${fmt(s.liquidationPref)} liquidation preference;` : ""}${s.guarantee ? ` personally guaranteed ${fmt(s.guarantee)} of the debt;` : ""}`.replace(/;$/, ".") : "",
     s.kpis.length ? `Numbers the CEO promised investors: ${s.kpis.map((k) => `"${k.quote}" (due Q${k.dueQuarter})`).join("; ")}.` : "",
-    s.alumni.length ? `Former employees: ${s.alumni.slice(0, 5).map((a) => `${a.name} (${a.reason} Q${a.leftQuarter}${a.atCompetitor ? ", now at a competitor" : ""}${a.grudge > 60 ? ", holds a grudge" : ""})`).join("; ")}.` : "",
-    `Roster: ${s.employees
-      .slice(0, 16)
-      .map((e) => `${e.name} (${titleOf(e)}, mood ${employeeMood(s, e)}, ${fmt(payOf(e))}/q, ${e.quirk})`)
-      .join("; ")}${s.employees.length > 16 ? ` and ${s.employees.length - 16} more` : ""}.`,
-    `Recurring characters in the CEO's life: ${s.cast.map((c) => `${c.name} (${c.role}${c.history.length ? `; remembers: ${c.history.slice(-2).join(" / ")}` : ""})`).join("; ")}.`,
-    s.threads.some((t) => t.open) ? `Ongoing storylines: ${s.threads.filter((t) => t.open).map((t) => `"${t.title}" so far: ${t.episodes.join(" → ")}`).join(" || ")}.` : "",
+    s.cast.some((c) => c.history.length) ? `What the recurring characters remember: ${s.cast.filter((c) => c.history.length).map((c) => `${c.name}: ${c.history.slice(-2).join(" / ")}`).join("; ")}.` : "",
     `Recent log: ${s.log.slice(0, 4).join(" | ")}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ];
+  return stable.filter(Boolean).join("\n") + STATE_SPLIT + live.filter(Boolean).join("\n");
 }
 
 export interface QuarterReport {

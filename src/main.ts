@@ -462,7 +462,14 @@ function ghostRow() {
   return `<div class="ghost"><span title="A comms agency writes it for you, or remixes what's already in the box with a dash of the tone you click. ${fmt(GHOST_COST)} of company money per draft.">✍️ <em class="ghost-verb">Ghostwrite</em> <b>${fmt(GHOST_COST)}</b>:</span>${GHOST_TONES.map((g) => `<button type="button" data-ghost="${g.id}">${g.label}</button>`).join("")}</div>`;
 }
 
+/** Grow the box to fit what's in it (a remixed speech can be long), up to a sane height. */
+function fitTextarea(ta: HTMLTextAreaElement) {
+  ta.style.height = "auto";
+  ta.style.height = `${Math.min(ta.scrollHeight + 4, Math.round(window.innerHeight * 0.4))}px`;
+}
+
 function wireGhost(card: HTMLElement, ta: HTMLTextAreaElement) {
+  ta.addEventListener("input", () => fitTextarea(ta));
   card.querySelectorAll<HTMLButtonElement>("[data-ghost]").forEach((b) =>
     b.addEventListener("click", async () => {
       const row = b.parentElement!;
@@ -491,6 +498,7 @@ function wireGhost(card: HTMLElement, ta: HTMLTextAreaElement) {
       try {
         const r = await api<{ text: string; mock?: boolean }>("/api/ghostwrite", { context: describe(s), situation, tone: b.dataset.ghost, draft });
         ta.value = r.text;
+        fitTextarea(ta);
         const trail = row.dataset.trail ? `${row.dataset.trail} + ${b.textContent}` : (b.textContent ?? "");
         row.dataset.trail = trail;
         row.querySelector(".ghost-verb")!.textContent = "Remix";

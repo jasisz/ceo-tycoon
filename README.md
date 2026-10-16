@@ -73,7 +73,11 @@ downsides stay).
 - `src/scene/OfficeScene.ts` — Phaser isometric office drawn with code (no assets).
 - `vite.config.ts` — mounts `/api/*` on the dev server so the key never reaches the browser.
 
-Default game master model is `claude-sonnet-5-5`; override with `CEO_MODEL` in `.env`.
+Default game master model is `claude-sonnet-5-5` (judgements, events, epilogues); flavour text (gossip,
+ghostwriting, shop catalogues, candidates) runs on `claude-haiku-5-5`. Override with `CEO_MODEL` and
+`CEO_FAST_MODEL` in `.env`. The slow-changing part of the game state (who's who, the story so far) is sent as a
+cached system block, so calls within a quarter mostly read it from the prompt cache. The dev server logs
+tokens, cache hits and a running cost estimate for every call (`[llm] ...`); a quarter typically costs a few cents.
 
 ## License
 
