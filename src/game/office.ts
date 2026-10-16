@@ -8,7 +8,6 @@ export interface OfficeSpec {
   emoji: string;
   desks: number; // Infinity for remote
   rent: number; // per quarter
-  ceoPay: number; // what the board lets you pay yourself here, per quarter
   moveCost: number; // one-off
   moralePerQ: number;
   hypePerQ: number;
@@ -25,7 +24,6 @@ export const OFFICES: Record<OfficeTier, OfficeSpec> = {
     emoji: "🏚️",
     desks: 4,
     rent: 6_000,
-    ceoPay: 15_000,
     moveCost: 5_000,
     moralePerQ: -2,
     hypePerQ: 0,
@@ -40,7 +38,6 @@ export const OFFICES: Record<OfficeTier, OfficeSpec> = {
     emoji: "🪴",
     desks: 8,
     rent: 30_000,
-    ceoPay: 35_000,
     moveCost: 20_000,
     moralePerQ: -1,
     hypePerQ: 0,
@@ -55,7 +52,6 @@ export const OFFICES: Record<OfficeTier, OfficeSpec> = {
     emoji: "🏢",
     desks: 14,
     rent: 60_000,
-    ceoPay: 70_000,
     moveCost: 120_000,
     moralePerQ: 0,
     hypePerQ: 1,
@@ -70,7 +66,6 @@ export const OFFICES: Record<OfficeTier, OfficeSpec> = {
     emoji: "🏙️",
     desks: 32,
     rent: 220_000,
-    ceoPay: 130_000,
     moveCost: 500_000,
     moralePerQ: 2,
     hypePerQ: 3,
@@ -85,7 +80,6 @@ export const OFFICES: Record<OfficeTier, OfficeSpec> = {
     emoji: "🏠",
     desks: Infinity,
     rent: 0,
-    ceoPay: 50_000,
     moveCost: 10_000,
     moralePerQ: -1,
     hypePerQ: -1,

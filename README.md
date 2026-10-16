@@ -20,7 +20,8 @@ Without a key the game still runs with a dumb heuristic "mock GM". Progress auto
 
 ## Offices
 
-You start in your aunt's garage, paying yourself ramen money. Garage → coworking → open space (+ east wing) → glass campus, or go remote-first and run the
+You start in your aunt's garage. You set your own salary — the board and the team compare it to
+the company's size every quarter. Garage → coworking → open space (+ east wing) → glass campus, or go remote-first and run the
 company as a Zoom grid. Hire beyond your desks and people hot-desk on beanbags (morale tanks).
 The office shop sells perks with trade-offs (climbing wall, beer fridge, AI receptionist, valuation
 LED wall...), all visible in the office and known to the LLM's office gossip. Perks cost upkeep

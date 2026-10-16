@@ -2,7 +2,7 @@
 // The LLM decides how each member votes after hearing the CEO; this module decides what a passed
 // motion actually does.
 
-import { addKpi, compactDesks, fmt, log, makeEmployee, quarterlyCosts, quarterlyRevenue, remember, removeEmployees, runwayQuarters, valuation, type CastMember, type GameState } from "./state";
+import { addKpi, ceoPay, compactDesks, fairCeoPay, fmt, log, makeEmployee, quarterlyCosts, quarterlyRevenue, remember, removeEmployees, runwayQuarters, valuation, type CastMember, type GameState } from "./state";
 
 export const BOARD_EVERY = 4; // quarters between scheduled board meetings
 
@@ -42,7 +42,7 @@ export function pickMotion(s: GameState): Motion {
     return { id: "cut_staff", title: `Cut ${n} people to extend runway`, text: `${n} people are laid off by the board's list, not yours.` };
   if (s.upgrades.length >= 3 && burn > 0)
     return { id: "sell_perks", title: "Sell the office perks", text: "Every perk goes on eBay. The team will know who wanted to keep the beer fridge." };
-  if (burn > 0 && s.hype < 50)
+  if ((burn > 0 && s.hype < 50) || ceoPay(s) > fairCeoPay(s) * 1.5)
     return { id: "ceo_pay", title: "Freeze the CEO's salary for a year", text: "Your salary is $0 for the next 4 quarters." };
   return { id: "growth", title: "Double headcount within 3 quarters", text: "The board writes it down as a KPI. They will check." };
 }

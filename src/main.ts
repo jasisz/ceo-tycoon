@@ -33,6 +33,10 @@ import {
   office,
   buyUpgrade,
   closeRound,
+  adjustPay,
+  CEO_SALARY_STEPS,
+  fairCeoPay,
+  setCeoSalary,
   type SystemId,
   costBreakdown,
   hireCandidate,
@@ -1120,6 +1124,7 @@ async function talkTo(id: number) {
     <p class="sub">${esc(titleOf(e))}${boss ? ` · reports to ${esc(boss.name)}` : ""} · mood ${mood}/100 · ${fmt(payOf(e))}/q${owns.length ? ` · <b>only one who understands ${owns.map((k) => `${SYSTEMS[k].emoji} ${SYSTEMS[k].name}`).join(", ")}</b>` : ""}</p>
     <p><i>${esc(e.name.split(" ")[0])} ${esc(e.quirk)}.</i>${e.knowsZug ? " <i>Looks at you a little too long whenever someone says “Switzerland”.</i>" : ""}</p>
     ${memories.length ? `<div class="memories"><b>They remember:</b>${memories.map((m) => `<p>• ${esc(m)}</p>`).join("")}</div>` : ""}
+    ${e.payQuarter === s.quarter ? "" : `<div class="pay-row"><span>💸 Pay, effective now:</span><button data-v="pay:-10">−10%</button><button data-v="pay:10">+10%</button><button data-v="pay:25">+25%</button></div>`}
     ${boss && !already ? `<p class="sub">⚠️ Skip-level: ${esc(boss.name.split(" ")[0])} will hear you went around them.</p>` : ""}
     ${already ? "<p>You already had a 1:1 this quarter. They're avoiding eye contact.</p>" : ""}`,
     [
@@ -1132,6 +1137,17 @@ async function talkTo(id: number) {
     already ? {} : { input: `Hey ${e.name.split(" ")[0]}, got a minute? I wanted to talk about...` },
   );
   if (r.value === "fire") return fire(e);
+  if (r.value.startsWith("pay:")) {
+    const pct = Number(r.value.slice(4));
+    const delta = adjustPay(s, e, pct);
+    render();
+    scene.bubble(e.id, pct > 0 ? (pct >= 25 ? "Wait, really?!" : "Huh. Thanks.") : "Noted. Updating my CV.");
+    await modal(
+      `<h2>${pct > 0 ? "💸 Raise" : "✂️ Pay cut"}: ${esc(e.name)}</h2><p>${fmt(payOf(e))}/q now (${delta > 0 ? "+" : ""}${fmt(delta)}). They'll remember it.</p>`,
+      [{ label: "OK", value: "ok" }],
+    );
+    return;
+  }
   if (r.value !== "go") return;
   await withBusy(async () => {
     loading(`${e.name.split(" ")[0]} is thinking about how honest to be...`);
@@ -1555,6 +1571,7 @@ async function ceoPanel() {
     `<h2>🕶️ Your private finances</h2>
     <div class="ledger">
       <p>Savings (salary): <b>${fmt(s.savings)}</b></p>
+      <p>Your salary: ${(s.payFrozenUntil ?? 0) > s.quarter ? `<b>$0</b> <span class="sub">(frozen by the board until Q${s.payFrozenUntil})</span>` : `<select id="ceo-pay">${[...new Set([...CEO_SALARY_STEPS, s.ceoSalary])].sort((a, b) => a - b).map((v) => `<option value="${v}" ${v === s.ceoSalary ? "selected" : ""}>${fmt(v)}/q</option>`).join("")}</select> <span class="sub">a board would call ~${fmt(fairCeoPay(s))} reasonable</span>`}</p>
       <p>Offshore account (Zug): <b>${fmt(s.offshore)}</b></p>
       <p>Equity: <b>${(s.equity * 100).toFixed(1)}%</b> ≈ ${fmt(valuation(s) * s.equity)} on paper</p>
       <p>Reputation: <b>${s.reputation}/100</b></p>
@@ -1569,7 +1586,12 @@ async function ceoPanel() {
       { label: "Close", value: "ok" },
     ],
   );
-  if (r.value === "resign") await newGame();
+  if (r.value === "resign") return newGame();
+  const pick = document.querySelector<HTMLSelectElement>("#ceo-pay");
+  if (pick && Number(pick.value) !== s.ceoSalary) {
+    setCeoSalary(s, Number(pick.value));
+    render();
+  }
 }
 
 // ---------- quarterly report ----------

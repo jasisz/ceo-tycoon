@@ -23,8 +23,11 @@ export const IPO_VALUATION = 100_000_000;
 const REVENUE_PER_EMPLOYEE = 38_000;
 const CONTRACTOR_RATE = 3;
 const KEY_PERSON_PREMIUM = 20_000;
-/** Founders in a garage live on ramen; a campus CEO pays themselves like one. */
-export const ceoPay = (s: GameState) => ((s.payFrozenUntil ?? 0) > s.quarter ? 0 : OFFICES[s.office].ceoPay);
+/** What you pay yourself, unless the board froze it. */
+export const ceoPay = (s: GameState) => ((s.payFrozenUntil ?? 0) > s.quarter ? 0 : s.ceoSalary);
+export const CEO_SALARY_STEPS = [0, 10_000, 20_000, 35_000, 60_000, 100_000, 150_000, 250_000];
+/** What a board would call a reasonable CEO salary for a company this size. */
+export const fairCeoPay = (s: GameState) => Math.max(10_000, Math.min(150_000, Math.round((valuation(s) * 0.003) / 5_000) * 5_000));
 const LICENSE_COST = 1_500;
 
 export interface Employee {
@@ -41,6 +44,7 @@ export interface Employee {
   contractor?: boolean; // rehired at CONTRACTOR_RATE x salary
   managerId?: number | null; // null/undefined = reports to the CEO
   title?: Title;
+  payQuarter?: number; // last quarter the CEO changed their pay
 }
 
 // ---------- company systems ----------
@@ -159,6 +163,7 @@ export interface GameState {
   threads: Thread[];
   liquidationPref: number; // paid to investors before you see a cent on exit
   guarantee: number; // what you personally owe if the company dies
+  ceoSalary: number; // per quarter, set by you
   cfo?: string; // the board's CFO, if they appointed one
   payFrozenUntil?: number; // the board froze your salary until this quarter
   lastBoardVote: number;
@@ -238,6 +243,7 @@ export function loadGame(): GameState | null {
     s.liquidationPref ??= 0;
     s.lastMediaQuarter ??= -10;
     s.lastBoardVote ??= 0;
+    s.ceoSalary ??= 20_000;
     s.guarantee ??= 0;
     s.formerly ??= [];
     for (const e of s.employees) {
@@ -404,6 +410,7 @@ export function newCompany(prev?: GameState): GameState {
     liquidationPref: 0,
     guarantee: 0,
     lastBoardVote: 0,
+    ceoSalary: 20_000,
     audits: 0,
     zugTransfers: 0,
     actionsLeft: ACTIONS_PER_QUARTER,
@@ -675,6 +682,57 @@ export function hireCandidate(
   return e;
 }
 
+/** Pay yourself a new salary. Everyone hears about a big raise (or a cut to zero). */
+export function setCeoSalary(s: GameState, amount: number) {
+  const before = s.ceoSalary;
+  s.ceoSalary = Math.max(0, amount);
+  if (amount > before * 1.25 && amount - before >= 10_000) {
+    rememberAll(s, `CEO gave themselves a raise: ${fmt(before)} → ${fmt(amount)} a quarter.`);
+    log(s, `You raised your own salary to ${fmt(amount)}/q. Finance has opinions; so does Slack.`);
+  } else if (amount === 0 && before > 0) {
+    rememberAll(s, "CEO cut their own salary to zero.");
+    s.morale = clamp(s.morale + 5);
+    log(s, "You cut your own salary to $0. LinkedIn post drafted, not yet posted.");
+  } else log(s, `Your salary is now ${fmt(amount)}/q.`);
+}
+
+/** The board and the team compare your salary to the company's size every quarter. */
+function stepCeoPay(s: GameState): string[] {
+  const pay = ceoPay(s);
+  const fair = fairCeoPay(s);
+  const excess = pay - fair;
+  if (excess > 5_000) {
+    const susp = Math.min(8, Math.ceil(excess / 20_000));
+    const sour = Math.min(6, Math.ceil(excess / 30_000));
+    s.suspicion = clamp(s.suspicion + susp);
+    s.morale = clamp(s.morale - sour);
+    return [`Your ${fmt(pay)} salary vs ~${fmt(fair)} for a company this size: the board noticed (suspicion +${susp}), so did the team (morale −${sour}).`];
+  }
+  if (pay <= fair / 2 && (s.payFrozenUntil ?? 0) <= s.quarter) {
+    s.morale = clamp(s.morale + 1);
+    return [`You pay yourself ${fmt(pay)} on a company that could justify ${fmt(fair)}. The team notices. Morale +1.`];
+  }
+  return [];
+}
+
+/** A pay change from the CEO, effective now. Returns how it landed. */
+export function adjustPay(s: GameState, e: Employee, pct: number) {
+  const delta = Math.round((e.salary * pct) / 100 / 1000) * 1000;
+  e.salary = Math.max(20_000, e.salary + delta);
+  e.payQuarter = s.quarter;
+  if (pct > 0) {
+    e.moodOffset = clamp(e.moodOffset + Math.round(pct * 0.8), -50, 50);
+    remember(e, s.quarter, `Got a ${pct}% raise from the CEO (${fmt(e.salary)}/q).`);
+    if (/raise/i.test(e.quirk)) e.quirk = "finally got the raise and is now asking about a title";
+    log(s, `Gave ${e.name} a ${pct}% raise (+${fmt(delta)}/q).`);
+  } else {
+    e.moodOffset = clamp(e.moodOffset - 20, -50, 50);
+    remember(e, s.quarter, `The CEO cut my pay by ${-pct}%. To ${fmt(e.salary)}/q.`);
+    log(s, `Cut ${e.name}'s pay by ${-pct}% (${fmt(delta)}/q). They're updating their CV.`);
+  }
+  return delta;
+}
+
 /** How much someone resents you on the way out. */
 function grudgeOf(s: GameState, e: Employee, reason: Alumnus["reason"]) {
   const broken = e.history.filter((h) => /broke|never paid|didn't pay/i.test(h)).length;
@@ -839,7 +897,7 @@ export function describe(s: GameState) {
     `Office: ${office(s).name}${s.floors ? " (+ extra floor)" : ""}, ${capacity(s) === Infinity ? "no desks" : `${capacity(s)} desks`}${hotDeskers(s) ? `, ${hotDeskers(s)} people have no desk and are hot-desking on beanbags` : ""}.`,
     describeOrg(s),
     s.cfo && s.employees.some((e) => e.name === s.cfo) ? `${s.cfo} is the CFO the board appointed over the CEO's objection; he reports every outgoing payment to the board.` : "",
-    (s.payFrozenUntil ?? 0) > s.quarter ? `The board froze the CEO's salary until Q${s.payFrozenUntil}.` : "",
+    (s.payFrozenUntil ?? 0) > s.quarter ? `The board froze the CEO's salary until Q${s.payFrozenUntil}.` : `The CEO pays themselves ${fmt(s.ceoSalary)} a quarter (a board would call ~${fmt(fairCeoPay(s))} reasonable here).`,
     s.upgrades.length ? `Office perks the CEO bought: ${ownedUpgrades(s).map((u) => (isOldNews(s, u.id) ? `${u.gossip} (old news, nobody cares anymore)` : `${u.gossip} (new)`)).join(", ")}.` : "No office perks.",
     s.promises.length ? `Open CEO promises: ${s.promises.map((p) => `"${p.text}" due Q${p.dueQuarter}`).join("; ")}.` : "No open promises.",
     `Systems: ${SYSTEM_IDS.map((k) => {
@@ -913,6 +971,7 @@ export function endQuarter(s: GameState): QuarterReport {
   s.morale = clamp(s.morale - 3 + perkMorale);
   s.hype = clamp(s.hype - 5 + (rev > cost ? 4 : 0) + perkHype + cSuiteHype(s));
   lines.push(...stepOrg(s, (e) => employeeMood(s, e)));
+  lines.push(...stepCeoPay(s));
   s.suspicion = clamp(s.suspicion - 4);
   if (perkMorale || perkHype) lines.push(`Office & perks: morale ${perkMorale >= 0 ? "+" : ""}${perkMorale}, hype ${perkHype >= 0 ? "+" : ""}${perkHype}.`);
 
