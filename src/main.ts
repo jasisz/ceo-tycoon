@@ -1167,7 +1167,7 @@ async function orgChart() {
   let warn = "";
   const promise = modal(
     `<h2>🏛️ Org chart</h2>
-    <p class="sub">Set who reports to whom and hand out titles. Nothing changes until you announce the reorg (1 decision). Titles cost money; taking one away costs more than money.</p>
+    <p class="sub">Nothing changes until you announce the reorg (1 decision). Titles cost money; taking one away costs more than money.</p>
     <div id="org-body"></div>`,
     [
       { label: "Close", value: "close" },
@@ -1175,6 +1175,13 @@ async function orgChart() {
     ],
     { wide: true },
   );
+  let sel: number | null = null;
+  const moveTo = (id: number, to: number | null) => {
+    const pm = new Map([...plan.values()].map((c) => [c.id, c.managerId]));
+    if (to === id) return;
+    if (wouldCycle(s, id, to, pm)) warn = "That would make someone their own boss. Even for a startup, no.";
+    else plan.get(id)!.managerId = to;
+  };
   const draw = () => {
     // preview on a copy so the real company only changes on announce
     const sim = structuredClone(s);
@@ -1183,37 +1190,55 @@ async function orgChart() {
       e.managerId = c.managerId;
       e.title = c.title ?? undefined;
     }
-    const row = (e: Employee, depth: number): string => {
-      const c = plan.get(e.id)!;
+    const moodOf = (x: Employee) => employeeMood(s, s.employees.find((o) => o.id === x.id)!);
+    const orig = (id: number) => s.employees.find((x) => x.id === id)!;
+    const card = (e: Employee) => {
       const team = reportsOf(sim, e.id);
-      const m = employeeMood(s, s.employees.find((x) => x.id === e.id)!);
-      const opts = [`<option value="ceo">🕶️ You</option>`, ...sim.employees.filter((x) => x.id !== e.id).map((x) => `<option value="${x.id}" ${c.managerId === x.id ? "selected" : ""}>${esc(x.name)}</option>`)].join("");
-      const titles = [`<option value="">${esc(e.role)}</option>`, ...TITLE_IDS.map((k) => `<option value="${k}" ${c.title === k ? "selected" : ""}>${esc(titleOf({ ...e, title: k }))} (+${fmt(TITLES[k].premium)}/q)</option>`)].join("");
-      const flags = [
-        team.length > MANAGER_SPAN ? chip(`${team.length} reports — drowning`, "bad") : team.length ? chip(`${team.length} reports`, "neutral") : "",
-        team.length && m >= 60 ? chip("team +10%", "good") : team.length && m <= 30 ? chip("team −10%", "bad") : "",
-        c.title && c.title !== "lead" && !team.length ? chip("title, no team", "bad") : "",
-        ownedBy(s, e.id).length && team.length >= 3 ? chip("too busy for " + ownedBy(s, e.id).map((k) => SYSTEMS[k].emoji).join(""), "bad") : "",
-      ].join("");
-      return `<div class="org-row" style="margin-left:${depth * 18}px">
-          <span class="org-name">${moodFace(m)} <b>${esc(e.name)}</b> ${flags}</span>
-          <select data-mgr="${e.id}">${opts}</select>
-          <select data-title="${e.id}">${titles}</select>
-        </div>${team.map((r) => row(r, depth + 1)).join("")}`;
+      const m = moodOf(e);
+      const owns = ownedBy(s, e.id);
+      const was = orig(e.id);
+      const changed = (managerOf(s, was)?.id ?? null) !== e.managerId || (was.title ?? null) !== (e.title ?? null);
+      const warns = [
+        team.length > MANAGER_SPAN ? "drowning in reports" : "",
+        e.title && e.title !== "lead" && !team.length ? "title, no team" : "",
+        owns.length && team.length >= 3 ? `neglects ${owns.map((k) => SYSTEMS[k].emoji).join("")}` : "",
+      ].filter(Boolean);
+      const effect = team.length ? (m >= 60 ? `<span class="good">+10%</span>` : m <= 30 ? `<span class="bad">−10%</span>` : "") : "";
+      return `<div class="oc-card ${sel === e.id ? "sel" : ""} ${warns.length ? "warn" : ""} ${changed ? "changed" : ""}" data-id="${e.id}" draggable="true" title="${esc(warns.join("; ") || `${e.name}, mood ${m}. Drag onto someone to move.`)}">
+        <span class="oc-top">${moodFace(m)} ${owns.map((k) => SYSTEMS[k].emoji).join("")}${team.length ? ` <span class="oc-team">👥${team.length}</span>` : ""} ${effect}</span>
+        <b>${esc(e.name)}</b>
+        <small>${esc(titleOf(e))}</small>
+        ${warns.length ? `<small class="oc-warn">⚠ ${esc(warns.join(" · "))}</small>` : ""}
+      </div>`;
+    };
+    const node = (e: Employee): string => `<li>${card(e)}${children(reportsOf(sim, e.id))}</li>`;
+    // individual contributors stack in a column under their manager; sub-managers branch out
+    const children = (kids: Employee[]) => {
+      if (!kids.length) return "";
+      const leaves = kids.filter((k) => !reportsOf(sim, k.id).length);
+      const branches = kids.filter((k) => reportsOf(sim, k.id).length);
+      const stack = leaves.length ? `<li class="oc-stack"><div class="oc-col">${leaves.map(card).join("")}</div></li>` : "";
+      return `<ul>${branches.map(node).join("")}${stack}</ul>`;
     };
     const top = reportsOf(sim, null);
     const span = top.length;
     const depth = orgDepth(sim);
-    const moodOf = (x: Employee) => employeeMood(s, s.employees.find((o) => o.id === x.id)!);
     const deleg = delegates(sim, moodOf);
     const cost = [...plan.values()].reduce((a, c) => {
-      const before = s.employees.find((x) => x.id === c.id)!.title;
+      const before = orig(c.id).title;
       return a + (c.title ? TITLES[c.title].premium : 0) - (before ? TITLES[before].premium : 0);
     }, 0);
     const changed = s.employees.filter((e) => {
       const c = plan.get(e.id)!;
       return (managerOf(s, e)?.id ?? null) !== c.managerId || (e.title ?? null) !== c.title;
     }).length;
+    const picked = sel !== null ? sim.employees.find((x) => x.id === sel) : undefined;
+    const inspector = picked
+      ? `<div class="oc-inspect"><b>${esc(picked.name)}</b> <span class="sub">${esc(picked.role)} · now click their new boss (or 🕶️ You), or drag.</span>
+        <div class="oc-titles">${[null, ...TITLE_IDS]
+          .map((k) => `<button data-t="${k ?? ""}" class="${(picked.title ?? null) === k ? "on" : ""}">${esc(k ? titleOf({ ...picked, title: k }) : picked.role)}${k ? ` <small>+${fmt(TITLES[k].premium)}/q</small>` : ""}</button>`)
+          .join("")}</div></div>`
+      : `<div class="oc-inspect"><span class="sub">Click someone to give them a title or a new boss. Or just drag cards around.</span></div>`;
     $("#org-body").innerHTML = `
       <div class="chips">
         ${chip(`${span} report to you`, span > CEO_SPAN ? "bad" : "good")}
@@ -1222,25 +1247,41 @@ async function orgChart() {
         ${cost ? chip(`Payroll ${cost > 0 ? "+" : ""}${fmt(cost)}/q`, cost > 0 ? "bad" : "good") : ""}
         ${changed ? chip(`${changed} change${changed === 1 ? "" : "s"}`, "neutral") : ""}
       </div>
-      <p class="sub">🧭 ≤4 direct reports and every manager has a happy team of 3–${MANAGER_SPAN}: +1 decision per quarter. Happy managers (mood 60+) get 10% more out of their team, miserable ones 10% less. When someone leaves, their manager inherits their systems.</p>
-      ${span > CEO_SPAN ? `<p class="sub">⚠️ More than ${CEO_SPAN} direct reports: your calendar eats one decision every quarter.</p>` : ""}
-      ${depth > HEALTHY_DEPTH ? `<p class="sub">⚠️ ${depth} layers: revenue −${(depth - HEALTHY_DEPTH) * 4}% to alignment meetings.</p>` : ""}
+      ${span > CEO_SPAN ? `<p class="sub bad">⚠️ More than ${CEO_SPAN} people report to you: your calendar eats one decision every quarter.</p>` : ""}
+      ${depth > HEALTHY_DEPTH ? `<p class="sub bad">⚠️ ${depth} layers: revenue −${(depth - HEALTHY_DEPTH) * 4}% to alignment meetings.</p>` : ""}
       ${warn ? `<p class="sub bad">${esc(warn)}</p>` : ""}
-      <div class="org-tree"><div class="org-row org-ceo"><b>🕶️ You (CEO)</b></div>${top.map((e) => row(e, 1)).join("")}</div>`;
+      ${inspector}
+      <div class="oc-wrap"><ul class="oc"><li><div class="oc-card ceo" data-id="ceo"><span class="oc-top">👔</span><b>You</b><small>CEO · ${span} direct</small></div>${children(top)}</li></ul></div>
+      <p class="sub">🧭 ≤4 direct reports and every manager running a happy team of 3–${MANAGER_SPAN} = +1 decision per quarter. Managers in a good mood (60+) get 10% more out of their team. When someone leaves, their manager inherits their systems.</p>`;
     warn = "";
-    document.querySelectorAll<HTMLSelectElement>("#org-body select[data-mgr]").forEach((el) =>
-      el.addEventListener("change", () => {
-        const id = Number(el.dataset.mgr);
-        const to = el.value === "ceo" ? null : Number(el.value);
-        const pm = new Map([...plan.values()].map((c) => [c.id, c.managerId]));
-        if (wouldCycle(s, id, to, pm)) warn = "That would make someone their own boss. Even for a startup, no.";
-        else plan.get(id)!.managerId = to;
+    const body = $("#org-body");
+    body.querySelectorAll<HTMLElement>(".oc-card").forEach((el) => {
+      const id = el.dataset.id === "ceo" ? null : Number(el.dataset.id);
+      el.addEventListener("click", () => {
+        if (sel !== null && id !== sel) moveTo(sel, id);
+        else sel = sel === id ? null : id;
         draw();
-      }),
-    );
-    document.querySelectorAll<HTMLSelectElement>("#org-body select[data-title]").forEach((el) =>
-      el.addEventListener("change", () => {
-        plan.get(Number(el.dataset.title))!.title = (el.value || null) as Title | null;
+      });
+      el.addEventListener("dragstart", (ev) => {
+        ev.dataTransfer?.setData("text/plain", String(id));
+        el.classList.add("dragging");
+      });
+      el.addEventListener("dragover", (ev) => {
+        ev.preventDefault();
+        el.classList.add("drop");
+      });
+      el.addEventListener("dragleave", () => el.classList.remove("drop"));
+      el.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        const from = Number(ev.dataTransfer?.getData("text/plain"));
+        if (!Number.isNaN(from) && from !== id) moveTo(from, id);
+        draw();
+      });
+    });
+    body.querySelectorAll<HTMLButtonElement>(".oc-titles button").forEach((b) =>
+      b.addEventListener("click", () => {
+        if (sel === null) return;
+        plan.get(sel)!.title = (b.dataset.t || null) as Title | null;
         draw();
       }),
     );

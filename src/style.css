@@ -42,7 +42,7 @@ body { margin: 0; background: var(--bg); height: 100vh; display: flex; flex-dire
 main { flex: 1; display: flex; min-height: 0; }
 #game { flex: 1; min-width: 0; position: relative; overflow: hidden; }
 #game canvas { display: block; position: absolute; inset: 0; }
-#panel { width: 300px; background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+#panel { width: 370px; background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
 #actions { padding: 10px 12px 4px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; overflow-y: auto; flex-shrink: 0; max-height: 62%; }
 #actions .group h4 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 #actions .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
@@ -177,3 +177,42 @@ main { flex: 1; display: flex; min-height: 0; }
 .qr-line.good { border-color: var(--good); }
 @media (max-width: 700px) { .qr, .qr-sys { grid-template-columns: 1fr; } }
 .qr-card .sub { font-size: 12px; margin: 4px 0 0; color: var(--muted); }
+
+/* org chart tree */
+.oc-wrap { overflow: auto; max-height: 52vh; padding: 10px 8px 14px; background: #f6f8fc; border: 1px solid var(--line); border-radius: 10px; margin-top: 8px; }
+.oc, .oc ul { display: flex; justify-content: center; margin: 0; padding: 18px 0 0; list-style: none; position: relative; }
+.oc { padding-top: 0; min-width: max-content; }
+.oc li { list-style: none; position: relative; padding: 18px 5px 0; display: flex; flex-direction: column; align-items: center; }
+.oc > li { padding-top: 0; }
+.oc li::before, .oc li::after { content: ""; position: absolute; top: 0; right: 50%; width: 50%; height: 18px; border-top: 2px solid #c5cddb; }
+.oc li::after { right: auto; left: 50%; border-left: 2px solid #c5cddb; }
+.oc > li::before, .oc > li::after { display: none; }
+.oc li:only-child::before { display: none; }
+.oc li:only-child::after { border-top: none; }
+.oc li:first-child::before, .oc li:last-child::after { border: 0 none; }
+.oc li:last-child::before { border-right: 2px solid #c5cddb; border-radius: 0 6px 0 0; }
+.oc li:first-child::after { border-radius: 6px 0 0 0; }
+.oc li:only-child::after { border-radius: 0; }
+.oc ul::before { content: ""; position: absolute; top: 0; left: 50%; height: 18px; border-left: 2px solid #c5cddb; }
+.oc-col { display: flex; flex-direction: column; gap: 5px; padding: 0 0 0 0; }
+.oc-card { width: 128px; background: #fff; border: 1.5px solid var(--line); border-radius: 9px; padding: 5px 7px; cursor: grab; display: flex; flex-direction: column; gap: 1px; text-align: center; font-size: 12px; user-select: none; transition: transform .1s, box-shadow .1s; }
+.oc-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(58,91,217,.15); }
+.oc-card b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.oc-card small { color: var(--muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.oc-top { font-size: 12px; }
+.oc-top .good { color: var(--good); font-weight: 700; font-size: 10.5px; }
+.oc-top .bad { color: var(--bad); font-weight: 700; font-size: 10.5px; }
+.oc-team { font-size: 10.5px; color: var(--muted); font-weight: 600; }
+.oc-card.ceo { background: #1d2433; color: #fff; border-color: #1d2433; cursor: pointer; }
+.oc-card.ceo small { color: #c9d1e3; }
+.oc-card.sel { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(58,91,217,.25); transform: translateY(-1px); }
+.oc-card.warn { border-color: var(--bad); }
+.oc-card.changed { background: #fffbea; }
+.oc-card.drop { border-style: dashed; border-color: var(--accent); background: #eef2ff; }
+.oc-card.dragging { opacity: .5; }
+.oc-inspect { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; min-height: 38px; }
+.oc-titles { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.oc-titles button { font: inherit; font-size: 12px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; background: #fff; cursor: pointer; }
+.oc-titles button small { color: var(--muted); }
+.oc-titles button.on { border-color: var(--accent); background: #eef2ff; font-weight: 600; }
+.oc-card small.oc-warn { color: var(--bad); font-weight: 600; }
