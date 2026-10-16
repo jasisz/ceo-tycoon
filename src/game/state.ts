@@ -742,6 +742,41 @@ export function buyLifestyle(s: GameState, it: LifestyleItem, payer: Payer): str
   return out;
 }
 
+/** Sell (or cancel) something. Money goes back where it came from; the team is quietly delighted. */
+export function sellLifestyle(s: GameState, id: string): string {
+  const i = s.lifestyle.findIndex((o) => o.id === id);
+  if (i < 0) return "";
+  const [o] = s.lifestyle.splice(i, 1);
+  const it = ownedItem(o);
+  if (!it) return "";
+  const back = Math.round(it.cost * (it.resale ?? 0.4));
+  if (o.payer === "company") {
+    s.cash += back;
+    s.expensed = Math.max(0, s.expensed - it.cost);
+  } else s.savings += back;
+  s.hype = clamp(s.hype - Math.ceil(it.hype / 3));
+  s.morale = clamp(s.morale + Math.max(1, Math.ceil(-it.morale / 3)));
+  rememberAll(s, `The CEO got rid of ${it.gossip}.`);
+  log(s, `${back ? "Sold" : "Cancelled"} ${it.emoji} ${it.name}${back ? ` for ${fmt(back)}` : ""}. The team pretends not to have noticed.`);
+  return back ? `${fmt(back)} back ${o.payer === "company" ? "to the company" : "to your savings"}.` : "Nothing back. Some things you can't resell.";
+}
+
+/** Sell an office perk for scrap. Taking away something people liked hurts more than never giving it. */
+export function sellUpgrade(s: GameState, id: string): string {
+  const u = findUpgrade(s, id);
+  if (!u || !s.upgrades.includes(id)) return "";
+  const back = Math.round(upgradeCost(s, id) * 0.3);
+  s.upgrades = s.upgrades.filter((x) => x !== id);
+  s.cash += back;
+  const loved = Math.max(0, u.morale);
+  if (loved) {
+    s.morale = clamp(s.morale - loved * 2);
+    rememberAll(s, `The CEO took away ${u.gossip}.`);
+  }
+  log(s, `Sold ${u.emoji} ${u.name} for ${fmt(back)}.${loved ? " People noticed." : ""}`);
+  return `${fmt(back)} back.${loved ? ` Morale −${loved * 2}: people liked it.` : ""}`;
+}
+
 /** Pay yourself a new salary. Everyone hears about a big raise (or a cut to zero). */
 export function setCeoSalary(s: GameState, amount: number) {
   const before = s.ceoSalary;

@@ -33,6 +33,8 @@ import {
   office,
   buyUpgrade,
   closeRound,
+  sellLifestyle,
+  sellUpgrade,
   buyLifestyle,
   lifestyleBlocker,
   adjustPay,
@@ -1068,7 +1070,7 @@ async function lifestyleShop() {
         <b>${esc(it.emoji)} ${esc(it.name)} <span class="price">${mine ? (mine.payer === "company" ? "✓ expensed" : "✓ yours") : fmt(it.cost)}</span></b>
         <small>${esc(it.blurb)}</small>
         <span>${fx}</span>
-        ${mine ? "" : `<div class="ls-pay">${btn("self", "💳 My savings")}${btn("company", `🏢 Company card · suspicion +${expenseSuspicion(s, it)}`)}</div>`}
+        ${mine ? `<div class="ls-pay"><button data-v="sell:${mine.id}">${(it.resale ?? 0.4) > 0 ? `💸 Sell for ${fmt(Math.round(it.cost * (it.resale ?? 0.4)))}` : it.upkeep ? "✂️ Cancel it" : "🗑️ Get rid of it"}</button></div>` : `<div class="ls-pay">${btn("self", "💳 My savings")}${btn("company", `🏢 Company card · suspicion +${expenseSuspicion(s, it)}`)}</div>`}
       </div>`;
     };
     const forSale = offers.filter((it) => !owned.some((o) => o.name === it.name));
@@ -1081,6 +1083,11 @@ async function lifestyleShop() {
       [{ label: "Done shopping", value: "close" }],
       { wide: true },
     );
+    if (r.value.startsWith("sell:")) {
+      last = esc(sellLifestyle(s, r.value.slice(5)));
+      render();
+      continue;
+    }
     const [payer, id] = r.value.split(":") as [Payer, string];
     const it = offers.find((x) => x.id === id);
     if (!it || lifestyleBlocker(s, it, payer)) return;
@@ -1156,11 +1163,12 @@ function upgradeCard(u: UpgradeSpec) {
   const stale = owned && isOldNews(s, u.id);
   const fx = owned ? perkEffect(s, u) : u;
   const upkeep = upkeepOf(s, u);
-  return `<button class="choice" data-v="buy:${u.id}" ${block ? "disabled" : ""}>
-    <b>${u.emoji} ${esc(u.name)} <span class="price">${price}</span></b>
+  const body = `<b>${u.emoji} ${esc(u.name)} <span class="price">${price}</span></b>
     <small>${esc(u.blurb)}${stale ? " <i>Old news: nobody notices it anymore.</i>" : ""}</small>
-    <span>${perQuarterChips(fx.morale, fx.hype, u.revenue)}${upkeep ? chip(`Upkeep ${fmt(upkeep)}/q`, "bad") : ""}${block && !owned ? chip(block, "neutral") : ""}</span>
-  </button>`;
+    <span>${perQuarterChips(fx.morale, fx.hype, u.revenue)}${upkeep ? chip(`Upkeep ${fmt(upkeep)}/q`, "bad") : ""}${block && !owned ? chip(block, "neutral") : ""}</span>`;
+  if (owned)
+    return `<div class="choice ls owned">${body}<div class="ls-pay"><button data-v="sell:${u.id}">🗑️ Sell for ${fmt(Math.round(upgradeCost(s, u.id) * 0.3))}${u.morale > 0 ? ` · morale −${u.morale * 2}` : ""}</button></div></div>`;
+  return `<button class="choice" data-v="buy:${u.id}" ${block ? "disabled" : ""}>${body}</button>`;
 }
 
 async function shopSpecials(): Promise<UpgradeSpec[]> {
@@ -1193,6 +1201,11 @@ async function shop() {
       <div class="choices">${list.map(upgradeCard).join("")}</div>`,
       [{ label: "Done shopping", value: "close" }],
     );
+    if (r.value.startsWith("sell:")) {
+      sellUpgrade(s, r.value.slice(5));
+      render();
+      continue;
+    }
     if (!r.value.startsWith("buy:")) return;
     const id = r.value.slice(4);
     if (upgradeBlocker(s, id)) continue;
