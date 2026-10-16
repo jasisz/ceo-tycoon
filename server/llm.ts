@@ -789,3 +789,40 @@ export function generateCandidates(context: string, roles: string[]) {
     () => ({ candidates: MOCK_CANDIDATES }),
   );
 }
+
+// ---------- ghostwriter: for CEOs who can't be bothered to type ----------
+
+const ghostSchema = {
+  type: "object",
+  properties: { text: { type: "string", description: "What the CEO says/writes, first person, 1-4 sentences, no stage directions, no quotes around it" } },
+  required: ["text"],
+  additionalProperties: false,
+} as const;
+
+const GHOST_TONES: Record<string, string> = {
+  honest: "plainly honest: admit the real situation, own mistakes, concrete plan, no buzzwords",
+  visionary: "grandiose visionary founder: big promises, world-changing mission, a number or two that will be hard to hit",
+  corporate: "pure corporate BS: synergy, alignment, journeys, leveraging, saying nothing with great confidence",
+  vague: "evasive and vague: commits to nothing, deflects every specific, sounds busy",
+  ruthless: "cold and ruthless: efficiency, consequences, a veiled threat, no warmth",
+};
+
+const MOCK_GHOST: Record<string, string> = {
+  honest: "Look, we're behind and I made some bad calls. Here's what we fix first, and here's what it costs.",
+  visionary: "In five years every company on earth will run on what we build in this room. 10x by next year, minimum.",
+  corporate: "We're leaning into a synergy-first journey to unlock alignment and leverage our core competencies going forward.",
+  vague: "Great question. We're looking at a number of options and we'll circle back when the picture is clearer.",
+  ruthless: "Results or exits. I don't care which, but I'll know by Friday.",
+};
+
+export function ghostwrite(context: string, situation: string, tone: string) {
+  const style = GHOST_TONES[tone] ?? GHOST_TONES.honest;
+  const user = `You are the CEO's ghostwriter. Write exactly what the CEO says in the situation below, in this style: ${style}. Use names and details from the situation and the game state where it helps. Keep it short.\n\nSituation (what's on the CEO's screen):\n${situation.slice(0, 1500)}\n\nGame state:\n${context}`;
+  return withFallback(
+    async () => {
+      const g = z.object({ text: z.string() }).parse(await ask(WORLD, user, ghostSchema, 600));
+      return { text: g.text.slice(0, 600) };
+    },
+    () => ({ text: MOCK_GHOST[tone] ?? MOCK_GHOST.honest }),
+  );
+}

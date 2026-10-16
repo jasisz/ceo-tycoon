@@ -13,6 +13,9 @@ npm install
 npm run dev
 ```
 
+Don't feel like typing? Every free-text box has a **Ghostwriter**: pick a tone (honest, visionary,
+corporate, vague, ruthless) and a comms agency writes it for you, for $5k of company money per draft.
+
 Without a key the game still runs with a dumb heuristic "mock GM". Progress autosaves to localStorage.
 
 ## Offices

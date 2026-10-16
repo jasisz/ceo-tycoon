@@ -399,11 +399,12 @@ function modal(html: string, buttons: Btn[], opts: { input?: string; wide?: bool
   const card = $("#modal-card");
   card.classList.toggle("wide", !!opts.wide);
   card.innerHTML = `${html}
-    ${opts.input !== undefined ? `<textarea id="m-input" rows="5" placeholder="${esc(opts.input)}"></textarea>` : ""}
+    ${opts.input !== undefined ? `<textarea id="m-input" rows="5" placeholder="${esc(opts.input)}"></textarea>${ghostRow()}` : ""}
     <div class="btns">${buttons.map((b, i) => `<button data-i="${i}" class="${b.primary ? "primary" : ""}">${esc(b.label)}</button>`).join("")}</div>`;
   m.classList.remove("hidden");
   const ta = card.querySelector("textarea");
   ta?.focus();
+  if (ta) wireGhost(card, ta);
   return new Promise((resolve) => {
     // buttons inside the body (e.g. event choices) resolve with their data-v value
     card.querySelectorAll<HTMLButtonElement>("[data-v]").forEach((btn) =>
@@ -422,6 +423,59 @@ function modal(html: string, buttons: Btn[], opts: { input?: string; wide?: bool
       }),
     );
   });
+}
+
+// ---------- ghostwriter: for players who don't feel like typing ----------
+
+const GHOST_TONES = [
+  { id: "honest", label: "😇 Honest" },
+  { id: "visionary", label: "🚀 Visionary" },
+  { id: "corporate", label: "🤡 Corporate" },
+  { id: "vague", label: "🫥 Vague" },
+  { id: "ruthless", label: "😈 Ruthless" },
+];
+
+/** A comms agency doesn't work for free. Paid from company cash, per draft. */
+const GHOST_COST = 5_000;
+
+function ghostRow() {
+  return `<div class="ghost"><span title="A comms agency writes it for you. ${fmt(GHOST_COST)} of company money per draft.">✍️ Ghostwrite <b>${fmt(GHOST_COST)}</b>:</span>${GHOST_TONES.map((g) => `<button type="button" data-ghost="${g.id}">${g.label}</button>`).join("")}</div>`;
+}
+
+function wireGhost(card: HTMLElement, ta: HTMLTextAreaElement) {
+  card.querySelectorAll<HTMLButtonElement>("[data-ghost]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const row = b.parentElement!;
+      if (s.cash < GHOST_COST) {
+        ta.placeholder = "The agency wants to be paid upfront. You can't afford words right now.";
+        return;
+      }
+      s.cash -= GHOST_COST;
+      log(s, `Paid a comms agency ${fmt(GHOST_COST)} to write something ${b.dataset.ghost} for you.`);
+      renderHud();
+      // what's on screen, with dropdowns reduced to what the player actually picked
+      const situation = [...card.children]
+        .filter((el) => !el.matches("textarea, .ghost, .btns"))
+        .map((el) => {
+          const copy = el.cloneNode(true) as HTMLElement;
+          copy.querySelectorAll("select").forEach((sel, i) => sel.replaceWith(el.querySelectorAll("select")[i].selectedOptions[0]?.text ?? ""));
+          return copy.textContent?.replace(/\s+/g, " ").trim() ?? "";
+        })
+        .join("\n")
+        .slice(0, 1500);
+      row.classList.add("busy");
+      ta.value = "";
+      ta.placeholder = "Your ghostwriter is typing...";
+      try {
+        const r = await api<{ text: string; mock?: boolean }>("/api/ghostwrite", { context: describe(s), situation, tone: b.dataset.ghost });
+        ta.value = r.text;
+      } catch {
+        ta.placeholder = "The ghostwriter is on strike. Type it yourself.";
+      }
+      row.classList.remove("busy");
+      ta.focus();
+    }),
+  );
 }
 
 function loading(text: string) {
