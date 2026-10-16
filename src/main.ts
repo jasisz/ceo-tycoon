@@ -138,9 +138,8 @@ function renderActions() {
     ${ACTIONS.filter((a) => a.id !== "ipo" || canIPO(s))
       .map((a) => `<button data-a="${a.id}" title="${esc(a.hint)}" ${busy || left <= 0 || !a.enabled() ? "disabled" : ""}>${a.label}</button>`)
       .join("")}
-    <p class="tip">Click an employee for a 1:1 (free). Click yourself (sunglasses) for your finances.</p>
+    <p class="tip">Click an employee for a 1:1 (free). Click yourself (sunglasses) for your finances — or to resign.</p>
     <button class="end" data-a="end" ${busy ? "disabled" : ""}>End quarter ▶</button>
-    <button class="newgame" data-a="new" ${busy ? "disabled" : ""}>↺ New game</button>
   `;
 }
 
@@ -157,7 +156,6 @@ $("#actions").addEventListener("click", async (e) => {
   const id = (e.target as HTMLElement).closest("button")?.dataset.a;
   if (!id || busy) return;
   if (id === "end") return nextQuarter();
-  if (id === "new") return newGame();
   const a = ACTIONS.find((x) => x.id === id);
   if (!a || !a.enabled() || s.actionsLeft <= 0) return;
   await a.run();
@@ -433,7 +431,7 @@ async function talkTo(id: number) {
 
 async function ceoPanel() {
   if (busy) return;
-  await modal(
+  const r = await modal(
     `<h2>🕶️ Your private finances</h2>
     <div class="ledger">
       <p>Savings (salary): <b>${fmt(s.savings)}</b></p>
@@ -443,8 +441,12 @@ async function ceoPanel() {
       <p>Net worth: <b>${fmt(netWorth(s))}</b> of ${fmt(FIRE_TARGET)} FIRE target</p>
     </div>
     ${s.promises.length ? `<h3>Open promises</h3>${s.promises.map((p) => `<p>• ${esc(p.text)} — due Q${p.dueQuarter}, ~${fmt(p.cost)}</p>`).join("")}` : ""}`,
-    [{ label: "Close", value: "ok" }],
+    [
+      { label: "Resign & start over", value: "resign" },
+      { label: "Close", value: "ok" },
+    ],
   );
+  if (r.value === "resign") await newGame();
 }
 
 // ---------- quarter loop ----------
@@ -552,7 +554,7 @@ async function gameOver() {
 }
 
 async function newGame() {
-  const r = await modal(`<h2>Start a new game?</h2><p>Your current career (net worth ${fmt(netWorth(s))}) will be lost. Like tears in rain. Or equity in a down round.</p>`, [
+  const r = await modal(`<h2>Resign and start over?</h2><p>Your current career (net worth ${fmt(netWorth(s))}) will be lost. Like tears in rain. Or equity in a down round.</p>`, [
     { label: "Keep playing", value: "no" },
     { label: "New game", value: "yes" },
   ]);
