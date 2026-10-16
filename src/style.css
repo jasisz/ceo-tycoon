@@ -225,3 +225,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .oc-field { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--muted); margin-top: 6px; }
 .oc-field select { font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; min-width: 260px; }
 #modal-card { max-height: 94vh; overflow-y: auto; }
+
+.team-h, .team-block h3 { font-size: 13px; margin: 12px 0 6px; }
+.team-h small, .team-block h3 small { color: var(--muted); font-weight: 400; }
+.team-block { border-left: 3px solid var(--line); padding-left: 10px; margin-top: 6px; }

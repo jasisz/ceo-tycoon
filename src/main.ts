@@ -1126,12 +1126,15 @@ const moodFace = (m: number) => (m > 65 ? "😄" : m > 45 ? "🙂" : m > 30 ? "�
 
 async function team() {
   // key people first, then the unhappiest - those are the ones worth a conversation
-  const people = [...s.employees].sort((a, b) => ownedBy(s, b.id).length - ownedBy(s, a.id).length || employeeMood(s, a) - employeeMood(s, b));
-  const rows = people.map((e) => {
+  const order = (xs: Employee[]) => [...xs].sort((a, b) => reportsOf(s, b.id).length - reportsOf(s, a.id).length || ownedBy(s, b.id).length - ownedBy(s, a.id).length || employeeMood(s, a) - employeeMood(s, b));
+  const card = (e: Employee) => {
     const m = employeeMood(s, e);
     const owns = ownedBy(s, e.id);
+    const team = reportsOf(s, e.id);
     const tags = [
+      team.length ? chip(`👥 team of ${team.length}`, "neutral") : "",
       owns.length ? chip(owns.map((k) => `${SYSTEMS[k].emoji} ${SYSTEMS[k].name}`).join(" "), "neutral") : "",
+      managerOf(s, e) ? chip("skip-level", "neutral") : "",
       e.contractor ? chip("💼 contractor", "neutral") : "",
       e.desk < 0 && s.office !== "remote" ? chip("no desk", "bad") : "",
       e.talkedQuarter === s.quarter ? chip("talked this Q", "neutral") : "",
@@ -1139,20 +1142,37 @@ async function team() {
     ].join("");
     return `<button class="choice person" data-v="talk:${e.id}">
       <b>${moodFace(m)} ${esc(e.name)} <span class="price">${fmt(payOf(e))}/q</span></b>
-      <small>${esc(titleOf(e))}${managerOf(s, e) ? ` → ${esc(managerOf(s, e)!.name.split(" ")[0])}` : ""} · mood ${m} · ${esc(e.quirk)}</small>
+      <small>${esc(titleOf(e))} · mood ${m} · ${esc(e.quirk)}</small>
       ${tags ? `<span>${tags}</span>` : ""}
     </button>`;
-  });
+  };
+  const direct = order(reportsOf(s, null));
+  // each manager's team gets its own block, depth-first so the structure reads top-down
+  const blocks: string[] = [];
+  const walk = (m: Employee, depth: number) => {
+    const team = order(reportsOf(s, m.id));
+    if (!team.length) return;
+    const boss = managerOf(s, m);
+    blocks.push(`<div class="team-block" style="margin-left:${Math.min(depth, 3) * 14}px">
+      <h3>👥 ${esc(m.name.split(" ")[0])}'s team <small>${esc(titleOf(m))}${boss ? ` · under ${esc(boss.name.split(" ")[0])}` : ""} · ${team.length}</small></h3>
+      <div class="choices team">${team.map(card).join("")}</div></div>`);
+    for (const x of team) walk(x, depth + 1);
+  };
+  for (const d of direct) walk(d, 0);
   const r = await modal(
     `<h2>👥 Team <small>${s.employees.length} people</small></h2>
-    <p class="sub">Key people first, then whoever is closest to quitting. Click someone for a 1:1.</p>
-    <div class="choices team">${rows.join("")}</div>`,
+    <p class="sub">Your direct reports first, then each manager's team. Click someone for a 1:1 — going around their manager gets noticed.</p>
+    <h3 class="team-h">👔 Reports to you <small>${direct.length}${direct.length > CEO_SPAN ? " ⚠️ too many" : ""}</small></h3>
+    <div class="choices team">${direct.map(card).join("")}</div>
+    ${blocks.join("")}`,
     [
+      { label: "🏛️ Org chart", value: "org" },
       { label: `📇 Alumni (${s.alumni.length})`, value: "alumni" },
       { label: "Close", value: "close" },
     ],
     { wide: true },
   );
+  if (r.value === "org") return orgChart();
   if (r.value === "alumni") return alumni();
   if (!r.value.startsWith("talk:")) return;
   const id = Number(r.value.slice(5));
