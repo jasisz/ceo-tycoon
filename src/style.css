@@ -40,18 +40,36 @@ body { margin: 0; background: var(--bg); height: 100vh; display: flex; flex-dire
 main { flex: 1; display: flex; min-height: 0; }
 #game { flex: 1; min-width: 0; position: relative; overflow: hidden; }
 #game canvas { display: block; position: absolute; inset: 0; }
-#panel { width: 290px; background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
-#actions { padding: 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
-#actions h3, #log h3 { margin: 0 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
-#actions h3 small { text-transform: none; letter-spacing: 0; font-weight: 400; float: right; }
-#actions button {
-  text-align: left; padding: 8px 10px; border: 1px solid var(--line); background: #f8f9fb; border-radius: 8px;
-  font: inherit; font-size: 14px; cursor: pointer; color: var(--ink);
+#panel { width: 300px; background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+#actions { padding: 10px 12px 4px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; overflow-y: auto; flex-shrink: 0; max-height: 62%; }
+#actions .group h4 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+#actions .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+#actions .grid button {
+  display: grid; grid-template-columns: 22px 1fr; grid-template-rows: auto auto; column-gap: 4px; align-items: center;
+  text-align: left; padding: 6px 7px; border: 1px solid var(--line); background: #f8f9fb; border-radius: 9px;
+  font: inherit; font-size: 13px; cursor: pointer; color: var(--ink); min-height: 44px;
 }
-#actions button:hover:not(:disabled) { border-color: var(--accent); background: #f0f3ff; }
-#actions button:disabled { opacity: .4; cursor: not-allowed; }
-#actions button.end { background: var(--accent); color: #fff; border: none; text-align: center; font-weight: 600; margin-top: 4px; }
-#actions .tip { font-size: 11px; color: var(--muted); margin: 4px 0 0; }
+#actions .grid button .ic { grid-row: span 2; font-size: 17px; text-align: center; }
+#actions .grid button .lb { font-weight: 600; line-height: 1.15; }
+#actions .grid button small { font-size: 10.5px; color: var(--muted); line-height: 1.2; }
+#actions .grid button:hover:not(:disabled) { border-color: var(--accent); background: #f0f3ff; transform: translateY(-1px); }
+#actions .grid button:disabled { opacity: .4; cursor: not-allowed; }
+#actions .grid button.free { border-style: dashed; }
+#actions .grid button.free small { color: var(--good); font-weight: 600; }
+#actions .grid button.glow { border-color: #f7b733; background: #fff8e1; box-shadow: 0 0 0 3px #f7b73344; }
+#actions .shady .grid { grid-template-columns: 1fr; }
+#actions .shady .grid button { background: #23263a; color: #f1f3ff; border-color: #23263a; }
+#actions .shady .grid button small { color: #ffd166; }
+#actions .shady .grid button:hover:not(:disabled) { background: #2f3350; border-color: #ffd166; }
+#footer { padding: 10px 12px; border-top: 1px solid var(--line); background: var(--panel); }
+#footer .decisions { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+#footer .pips { display: flex; gap: 5px; }
+#footer .pips i { width: 12px; height: 12px; border-radius: 50%; background: #e2e6ee; border: 2px solid #cfd5e1; }
+#footer .pips i.on { background: var(--accent); border-color: var(--accent); }
+#footer .tip { font-size: 11px; color: var(--muted); margin: 6px 0 8px; }
+#footer button.end { width: 100%; padding: 10px; background: var(--accent); color: #fff; border: none; border-radius: 9px; font: inherit; font-weight: 700; cursor: pointer; }
+#footer button.end:disabled { opacity: .5; cursor: not-allowed; }
+#log h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 #log { padding: 12px; overflow-y: auto; flex: 1; font-size: 12px; }
 #log p { margin: 0 0 6px; line-height: 1.35; color: #3c4456; }
 
@@ -73,7 +91,6 @@ main { flex: 1; display: flex; min-height: 0; }
 .choice:disabled { opacity: .5; cursor: not-allowed; }
 .choice small { color: var(--muted); font-size: 12px; }
 .choice .price { float: right; font-weight: 600; color: var(--accent); font-size: 13px; }
-#actions button small.free { font-size: 10px; color: var(--good); font-weight: 700; text-transform: uppercase; margin-left: 4px; }
 .narr { font-size: 15px; line-height: 1.45; }
 .quote { margin: 4px 0; padding-left: 10px; border-left: 3px solid var(--line); }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }

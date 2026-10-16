@@ -117,53 +117,124 @@ function renderLog() {
   $("#log").innerHTML = `<h3>Company log</h3>` + s.log.map((l) => `<p>${esc(l)}</p>`).join("");
 }
 
+type Group = "talk" | "people" | "company" | "shady";
+
 interface Action {
   id: string;
+  group: Group;
+  icon: string;
   label: string;
   hint: string;
-  cost?: string;
   free?: boolean; // doesn't use up a decision
   enabled: () => boolean;
+  /** Small caption under the label: cost, cooldown or why it's unavailable. */
+  sub: () => string;
   run: () => Promise<void> | void;
 }
 
+const GROUPS: { id: Group; title: string }[] = [
+  { id: "talk", title: "🗣️ Talk" },
+  { id: "people", title: "👥 People" },
+  { id: "company", title: "🏢 Company" },
+  { id: "shady", title: "🕶️ Off the books" },
+];
+
+const cooldown = (since: number, every: number) => {
+  const left = since + every - s.quarter;
+  return left > 0 ? `in ${left}q` : "";
+};
+
 const ACTIONS: Action[] = [
-  { id: "allhands", label: "📣 All-hands speech", hint: "Write a speech. The LLM judges how it lands.", enabled: () => true, run: allHands },
+  { id: "allhands", group: "talk", icon: "📣", label: "All-hands", hint: "Write a speech. The game master judges how it lands.", enabled: () => true, sub: () => "you write it", run: allHands },
   {
     id: "pitch",
-    label: "💼 Pitch investors",
-    hint: "Raise money. Success depends on hype and your pitch.",
+    group: "talk",
+    icon: "💼",
+    label: "Pitch VCs",
+    hint: "Raise money. Success depends on hype and your pitch. Every 2 quarters.",
     enabled: () => s.quarter - s.lastRaiseQuarter >= 2,
+    sub: () => cooldown(s.lastRaiseQuarter, 2) || "raise money",
     run: pitch,
   },
-  { id: "layoff", label: "✂️ Lay off 10%", hint: "Investors: efficiency! Employees: fear.", enabled: () => s.employees.length > 1, run: layoffs },
   {
     id: "hire",
-    label: "🧑‍💻 Hire 2 people",
+    group: "people",
+    icon: "🧑‍💻",
+    label: "Hire +2",
     hint: "Recruiting fees $40k. Beyond your desk count, people hot-desk (morale penalty).",
-    cost: "$40k",
     enabled: () => s.employees.length < maxHeadcount(s),
+    sub: () => (s.employees.length >= maxHeadcount(s) ? "no room" : s.employees.length + 2 > capacity(s) ? "$40k · no desks!" : "$40k"),
     run: hireTwo,
   },
-  { id: "party", label: "🎉 Winter party", hint: "Once a year. $6k per head.", enabled: () => s.quarter - s.lastPartyQuarter >= 4, run: party },
-  { id: "bonus", label: "💸 Promise a bonus", hint: "Morale now, bill in 2 quarters.", enabled: () => !s.promises.some((p) => p.text.startsWith("Bonus for everyone")), run: promiseBonus },
-  { id: "pivot", label: "🔀 Pivot", hint: "New product. Hype up, morale down.", enabled: () => true, run: pivot },
-  { id: "offshore", label: "🏝️ 'Consulting fee' to Zug", hint: "$250k to your offshore account. Suspicious.", enabled: () => s.cash > 250_000, run: offshore },
-  { id: "realestate", label: "🏢 Real estate", hint: "Move offices, lease another floor or go remote.", enabled: () => true, run: realEstate },
-  { id: "shop", label: "🛍️ Office shop", hint: "Perks for the office. Costs money, not a decision.", free: true, enabled: () => true, run: shop },
-  { id: "ipo", label: "🔔 IPO", hint: "Q6+, valuation ≥ $60M. Cash out your equity.", enabled: () => canIPO(s), run: doIpo },
+  {
+    id: "layoff",
+    group: "people",
+    icon: "✂️",
+    label: "Lay off 10%",
+    hint: "Investors: efficiency! Employees: fear.",
+    enabled: () => s.employees.length > 1,
+    sub: () => `−${Math.max(1, Math.round(s.employees.length * 0.1))} people`,
+    run: layoffs,
+  },
+  {
+    id: "party",
+    group: "people",
+    icon: "🎉",
+    label: "Party",
+    hint: "Once a year. $6k per head. Big morale boost.",
+    enabled: () => s.quarter - s.lastPartyQuarter >= 4,
+    sub: () => cooldown(s.lastPartyQuarter, 4) || fmt(6_000 * s.employees.length),
+    run: party,
+  },
+  {
+    id: "bonus",
+    group: "people",
+    icon: "💸",
+    label: "Promise bonus",
+    hint: "Morale now, bill in 2 quarters. Break it and morale crashes.",
+    enabled: () => !s.promises.some((p) => p.text.startsWith("Bonus for everyone")),
+    sub: () => (s.promises.some((p) => p.text.startsWith("Bonus for everyone")) ? "already promised" : `pay ${fmt(8_000 * s.employees.length)} later`),
+    run: promiseBonus,
+  },
+  { id: "pivot", group: "company", icon: "🔀", label: "Pivot", hint: "New product. Hype up, morale down.", enabled: () => true, sub: () => "hype ↑ morale ↓", run: pivot },
+  { id: "realestate", group: "company", icon: "🏢", label: "Real estate", hint: "Move offices, lease another floor or go remote.", enabled: () => true, sub: () => `${office(s).emoji} ${office(s).name.split(" ")[0].toLowerCase()}`, run: realEstate },
+  { id: "shop", group: "company", icon: "🛍️", label: "Office shop", hint: "Perks for the office. Costs money, not a decision.", free: true, enabled: () => true, sub: () => "free action", run: shop },
+  { id: "ipo", group: "company", icon: "🔔", label: "IPO", hint: "Q6+, valuation ≥ $60M. Cash out your equity.", enabled: () => canIPO(s), sub: () => (canIPO(s) ? "ring the bell!" : "Q6+ · $60M"), run: doIpo },
+  {
+    id: "offshore",
+    group: "shady",
+    icon: "🏝️",
+    label: "'Consulting fee' to Zug",
+    hint: "$250k from the company to your offshore account. Suspicion +14.",
+    enabled: () => s.cash > 250_000,
+    sub: () => `$250k · suspicion +14 · stash ${fmt(s.offshore)}`,
+    run: offshore,
+  },
 ];
 
 function renderActions() {
   const left = s.actionsLeft;
-  $("#actions").innerHTML = `
-    <h3>Decisions <small>${left}/${ACTIONS_PER_QUARTER} left this quarter</small></h3>
-    ${ACTIONS.filter((a) => a.id !== "ipo" || canIPO(s))
-      .map((a) => `<button data-a="${a.id}" title="${esc(a.hint)}" ${busy || (left <= 0 && !a.free) || !a.enabled() ? "disabled" : ""}>${a.label}${a.free ? ' <small class="free">free</small>' : ""}</button>`)
-      .join("")}
-    <p class="tip">Click an employee for a 1:1 (free). Click yourself (sunglasses) for your finances — or to resign.</p>
-    <button class="end" data-a="end" ${busy ? "disabled" : ""}>End quarter ▶</button>
-  `;
+  const pips = Array.from({ length: ACTIONS_PER_QUARTER }, (_, i) => `<i class="${i < left ? "on" : ""}"></i>`).join("");
+  $("#actions").innerHTML = GROUPS.map((g) => {
+    const items = ACTIONS.filter((a) => a.group === g.id);
+    return `<section class="group ${g.id}">
+      <h4>${g.title}</h4>
+      <div class="grid">${items
+        .map((a) => {
+          const off = busy || (left <= 0 && !a.free) || !a.enabled();
+          return `<button data-a="${a.id}" title="${esc(a.hint)}" class="${a.free ? "free" : ""} ${a.id === "ipo" && !off ? "glow" : ""}" ${off ? "disabled" : ""}>
+            <span class="ic">${a.icon}</span><span class="lb">${esc(a.label)}</span><small>${esc(a.sub())}</small>
+          </button>`;
+        })
+        .join("")}</div>
+    </section>`;
+  }).join("");
+  $("#footer").innerHTML = `
+    <div class="decisions" title="Decisions left this quarter. The office shop and 1:1s are free.">
+      <span>Decisions</span><span class="pips">${pips}</span>
+    </div>
+    <p class="tip">💡 Click employees for a free 1:1. Click yourself 🕶️ for finances.</p>
+    <button class="end" data-a="end" ${busy ? "disabled" : ""}>End Q${s.quarter} ▶</button>`;
 }
 
 function render() {
@@ -176,7 +247,7 @@ function render() {
   scene?.setOffshore(s.offshore);
 }
 
-$("#actions").addEventListener("click", async (e) => {
+$("#panel").addEventListener("click", async (e) => {
   const id = (e.target as HTMLElement).closest("button")?.dataset.a;
   if (!id || busy) return;
   if (id === "end") return nextQuarter();
