@@ -137,3 +137,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .epilogue p { margin: 4px 0; line-height: 1.45; }
 .epilogue .li { background: #f3f6f9; border-left: 3px solid #0a66c2; border-radius: 6px; padding: 7px 10px; margin-top: 8px; }
 .epilogue .li small { color: var(--muted); }
+
+.terms { display: grid; gap: 8px; margin: 10px 0 4px; }
+.terms label { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-weight: 600; }
+.terms select { flex: 1; max-width: 70%; font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg, #fff); color: inherit; }

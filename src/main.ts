@@ -32,6 +32,10 @@ import {
   rent,
   office,
   buyUpgrade,
+  closeRound,
+  pick,
+  SWEETENERS,
+  type Sweetener,
   isOldNews,
   perkEffect,
   upkeepOf,
@@ -86,6 +90,7 @@ interface Judgement {
   people: PersonEffect[];
   company: IdentityChange;
   kpis: { quote: string; metric: "revenue" | "headcount" | "valuation" | "hype"; multiplier: number; quarters: number }[];
+  deal?: { verdict: "accept" | "counter" | "pass"; premoney: number; amount: number; line: string };
   narration: string;
   reactions: { speaker: string; line: string }[];
   promises: { text: string; quarters_until_due: number; cost: number }[];
@@ -198,6 +203,16 @@ const ACTIONS: Action[] = [
     enabled: () => s.quarter - s.lastRaiseQuarter >= 2,
     sub: () => cooldown(s.lastRaiseQuarter, 2) || "raise money",
     run: pitch,
+  },
+  {
+    id: "media",
+    group: "talk",
+    icon: "📰",
+    label: "Media",
+    hint: "A podcast, an interview, a LinkedIn post or a paid feature. Hype is cheap; quotes are forever. Once a quarter.",
+    enabled: () => s.lastMediaQuarter < s.quarter,
+    sub: () => (s.lastMediaQuarter >= s.quarter ? "next quarter" : "go public"),
+    run: media,
   },
   {
     id: "hire",
@@ -494,20 +509,57 @@ async function allHands() {
   });
 }
 
+const ASKS = [
+  { label: "Small bridge", frac: 0.1 },
+  { label: "Proper round", frac: 0.2 },
+  { label: "Mega-round", frac: 0.35 },
+];
+const VALUATIONS = [
+  { label: "Fair", mult: 1 },
+  { label: "Optimistic", mult: 1.6 },
+  { label: "Delusional", mult: 3 },
+];
+
 async function pitch() {
-  const r = await modal(
-    `<h2>💼 Investor pitch</h2><p>Valuation ${fmt(valuation(s))}, revenue ${fmt(quarterlyRevenue(s))}/q, burn ${fmt(Math.max(0, quarterlyCosts(s) - quarterlyRevenue(s)))}/q. Three partners from a VC fund stare at you over oat-milk lattes. Pitch.</p>`,
+  const fair = valuation(s);
+  const round = (n: number) => Math.max(50_000, Math.round(n / 50_000) * 50_000);
+  const select = (id: string, opts: string[], def = 0) =>
+    `<select id="${id}">${opts.map((o, i) => `<option value="${i}" ${i === def ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
+  const promise = modal(
+    `<h2>💼 Investor pitch</h2><p>Valuation ${fmt(fair)}, revenue ${fmt(quarterlyRevenue(s))}/q, burn ${fmt(Math.max(0, quarterlyCosts(s) - quarterlyRevenue(s)))}/q. Three partners from a VC fund stare at you over oat-milk lattes.</p>
+    <div class="terms">
+      <label>Ask ${select("p-ask", ASKS.map((a) => `${a.label}: ${fmt(round(fair * a.frac))}`), 1)}</label>
+      <label>Valuation ${select("p-val", VALUATIONS.map((v) => `${v.label}: ${fmt(round(fair * v.mult))}`))}</label>
+      <label>Terms ${select("p-sweet", Object.values(SWEETENERS).map((w) => w.label))}</label>
+    </div>
+    <p class="sub" id="p-sum"></p>
+    <p>Pitch.</p>`,
     [
       { label: "Cancel", value: "cancel" },
       { label: "Pitch", value: "go", primary: true },
     ],
     { input: "We're not a SaaS, we're a platform. Think Uber, but for..." },
   );
+  const readTerms = () => {
+    const ask = round(fair * ASKS[Number(($("#p-ask") as HTMLSelectElement).value)].frac);
+    const premoney = round(fair * VALUATIONS[Number(($("#p-val") as HTMLSelectElement).value)].mult);
+    const sweetener = Object.keys(SWEETENERS)[Number(($("#p-sweet") as HTMLSelectElement).value)] as Sweetener;
+    return { ask, premoney, fair, sweetener };
+  };
+  const summarize = () => {
+    const p = readTerms();
+    $("#p-sum").textContent = `If they say yes: +${fmt(p.ask)}, your stake ${(s.equity * 100).toFixed(1)}% → ${((s.equity * p.premoney) / (p.premoney + p.ask) * 100).toFixed(1)}%. ${SWEETENERS[p.sweetener].blurb}`;
+  };
+  document.querySelectorAll(".terms select").forEach((el) => el.addEventListener("change", summarize));
+  summarize();
+  const terms = readTerms();
+  const r = await promise;
   if (r.value !== "go") return;
+  Object.assign(terms, readTerms());
   await withBusy(async () => {
     const arrived = scene.investorsArrive();
     loading("Investors are nodding thoughtfully...");
-    const [j] = await Promise.all([judged("investors", r.text), arrived]);
+    const [j] = await Promise.all([judged("investors", r.text, { terms }), arrived]);
     applyEffects(s, j.deltas);
     addPromises(j);
     for (const k of j.kpis) addKpi(s, k.quote, k.metric, k.multiplier, k.quarters);
@@ -516,20 +568,132 @@ async function pitch() {
       : "";
     s.actionsLeft--;
     s.lastRaiseQuarter = s.quarter;
+    const deal = j.deal ?? { verdict: "pass" as const, premoney: 0, amount: 0, line: "" };
+    const said = deal.line ? `<p class="quote"><b>Lead partner:</b> “${esc(deal.line)}”</p>` : "";
     let extra: string;
-    if (s.hype >= 35) {
-      const raised = Math.round((valuation(s) * 0.15 * s.hype) / 60);
-      s.cash += raised;
-      s.equity *= 0.85;
-      extra = `<p class="big good">💰 Raised ${fmt(raised)}! Your equity is diluted to ${(s.equity * 100).toFixed(1)}%.</p>`;
-      log(s, `Raised ${fmt(raised)} from investors.`);
-      scene.investorsLeave(true);
-    } else {
-      extra = `<p class="big bad">🚪 "We'll circle back." They will not circle back.</p>`;
+    if (deal.verdict === "pass") {
+      extra = `${said}<p class="big bad">🚪 "We'll circle back." They will not circle back.</p>`;
       log(s, "Investors passed.");
       scene.investorsLeave(false);
+    } else {
+      let take = deal.verdict === "accept";
+      if (!take) {
+        const keep = ((s.equity * deal.premoney) / (deal.premoney + deal.amount)) * 100;
+        const c = await modal(
+          `<h2>🧾 Counter-offer</h2>${said}<p>They offer <b>${fmt(deal.amount)}</b> at a <b>${fmt(deal.premoney)}</b> pre-money valuation (you asked ${fmt(terms.ask)} at ${fmt(terms.premoney)}). Your stake would drop to ${keep.toFixed(1)}%. ${esc(SWEETENERS[terms.sweetener].blurb)}</p>`,
+          [
+            { label: "Walk away", value: "no" },
+            { label: "Take the money", value: "yes", primary: true },
+          ],
+        );
+        take = c.value === "yes";
+        if (!take) {
+          s.hype = Math.max(0, s.hype - 3);
+          log(s, `Walked away from a ${fmt(deal.amount)} counter-offer.`);
+        }
+      }
+      if (take) {
+        const signed = closeRound(s, deal.amount, deal.premoney, terms.fair, terms.sweetener);
+        extra = `${deal.verdict === "accept" ? said : ""}<p class="big good">💰 Raised ${fmt(deal.amount)}! Your equity is diluted to ${(s.equity * 100).toFixed(1)}%.</p>${signed ? `<p class="promise">✍️ ${esc(signed)}</p>` : ""}`;
+        scene.investorsLeave(true);
+      } else {
+        extra = `<p class="big bad">🚶 You walked out. Somewhere a partner tweets about "founder ego".</p>`;
+        scene.investorsLeave(false);
+      }
     }
     await modal(judgementHtml("Pitch result", j, extra + kpiHtml), [{ label: "OK", value: "ok" }]);
+  });
+}
+
+const SPONSORED_COST = 40_000;
+
+/** What Priya asks depends on what she has heard. */
+function journalistQuestion() {
+  const grudge = s.alumni.filter((a) => a.grudge > 60)[0];
+  if (s.suspicion >= 40) return "Sources tell me there are regular \"consulting fees\" going to a firm in Zug. Who exactly is the consultant?";
+  if (s.crises.length) return `Customers say ${SYSTEMS[s.crises[0]].name.toLowerCase()} has been broken for weeks. What is actually going on?`;
+  if (grudge) return `${grudge.name}, who was ${grudge.reason} in Q${grudge.leftQuarter}, told me some things about how you run this company. Do you want to respond?`;
+  if (s.kpis.length) return `You told investors: "${s.kpis[0].quote}". Are you on track, honestly?`;
+  if (quarterlyRevenue(s) < quarterlyCosts(s)) return `You burn ${fmt(quarterlyCosts(s) - quarterlyRevenue(s))} a quarter. What's the path to profitability?`;
+  return "What do you say to people who call this a solution looking for a problem?";
+}
+
+async function media() {
+  const priya = s.cast.find((c) => /journalist/i.test(c.role));
+  const outlets = [
+    {
+      id: "podcast",
+      icon: "🎙️",
+      name: "The Grindset Hour podcast",
+      brief: "a three-hour founder podcast with a huge audience of aspiring founders; the host loves hustle, cold plunges and hot takes",
+      question: pick(["Walk me through your morning routine. Be honest, what time do you wake up?", "What's the hardest decision you've made as a CEO?", "Is work-life balance a myth?", "If you had to fire half your team tomorrow, how would you decide?"]),
+      cost: 0,
+      blurb: "Huge reach, softball questions, the clip will outlive you.",
+    },
+    {
+      id: "interview",
+      icon: "📰",
+      name: `${priya?.name ?? "A journalist"}, TechCrunchy`,
+      brief: `${priya ? `${priya.role}. ` : ""}a sharp tech journalist doing a profile; she fact-checks and has sources inside the company`,
+      question: journalistQuestion(),
+      cost: 0,
+      blurb: "Credibility if you're straight with her. She already has a question.",
+    },
+    {
+      id: "linkedin",
+      icon: "💼",
+      name: "LinkedIn",
+      brief: "the CEO's own thought-leadership post; employees, investors and former employees all see it",
+      question: "(Nobody asked. You're writing a post.)",
+      cost: 0,
+      blurb: "Investors like, employees screenshot, alumni comment.",
+    },
+    {
+      id: "sponsored",
+      icon: "💸",
+      name: "Fortunate magazine, sponsored feature",
+      brief: `a glossy "Visionary CEOs to Watch" feature the company paid ${fmt(SPONSORED_COST)} for, written by the magazine's branded-content team; it says "sponsored" in 6pt font`,
+      question: "Tell our readers what makes you a visionary.",
+      cost: SPONSORED_COST,
+      blurb: `${fmt(SPONSORED_COST)} from the company budget. Flattering by contract.`,
+    },
+  ];
+  const c = await modal(
+    `<h2>📰 Media</h2><p class="sub">Pick where to show your face. Whatever you say, the team reads it too.</p>
+    <div class="choices">${outlets
+      .map(
+        (o) => `<button class="choice" data-v="${o.id}" ${o.cost > s.cash ? "disabled" : ""}>
+        <b>${o.icon} ${esc(o.name)}${o.cost ? ` <span class="price">${fmt(o.cost)}</span>` : ""}</b>
+        <small>${esc(o.blurb)}</small></button>`,
+      )
+      .join("")}</div>`,
+    [{ label: "Cancel", value: "cancel" }],
+    { wide: true },
+  );
+  const o = outlets.find((x) => x.id === c.value);
+  if (!o) return;
+  const r = await modal(
+    `<h2>${o.icon} ${esc(o.name)}</h2><p class="quote">“${esc(o.question)}”</p>`,
+    [
+      { label: "Cancel", value: "cancel" },
+      { label: o.id === "linkedin" ? "Post" : "Answer", value: "go", primary: true },
+    ],
+    { input: o.id === "linkedin" ? "I fired my best engineer today. Here's what it taught me about B2B sales 🧵" : "Look, I'll be honest with you..." },
+  );
+  if (r.value !== "go") return;
+  await withBusy(async () => {
+    loading(o.id === "linkedin" ? "Waiting for likes..." : "The interview goes live...");
+    const j = await judged("media", r.text, { outlet: { name: o.name, brief: o.brief, question: o.question } });
+    if (o.cost) s.cash -= o.cost;
+    applyEffects(s, j.deltas);
+    addPromises(j);
+    for (const k of j.kpis) addKpi(s, k.quote, k.metric, k.multiplier, k.quarters);
+    s.actionsLeft--;
+    s.lastMediaQuarter = s.quarter;
+    log(s, `${o.name}: ${j.narration}`);
+    showReactions(j);
+    const kpiHtml = j.kpis.length ? `<p class="promise">📝 Investors clipped it: ${j.kpis.map((k) => `“${esc(k.quote)}”`).join(", ")}.</p>` : "";
+    await modal(judgementHtml(`${o.icon} ${o.name}`, j, kpiHtml, o.cost ? { ...j.deltas, cash: -o.cost } : j.deltas), [{ label: "Close the tab", value: "ok" }]);
   });
 }
 

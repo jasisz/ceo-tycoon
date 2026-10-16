@@ -154,11 +154,14 @@ export interface GameState {
   boardDemands: string[]; // reasons the board wants to see you next quarter
   cast: CastMember[];
   threads: Thread[];
+  liquidationPref: number; // paid to investors before you see a cent on exit
+  guarantee: number; // what you personally owe if the company dies
   audits: number; // audits survived at this company; auditors keep a file
   zugTransfers: number; // "consulting fees" paid at this company
   actionsLeft: number;
   lastPartyQuarter: number;
   lastRaiseQuarter: number;
+  lastMediaQuarter: number;
   lastRevenue: number;
   eventResolvedQuarter: number; // quarter whose random event has been played
   recentEvents: string[];
@@ -196,7 +199,7 @@ export const PRODUCTS = [
   "agentic AI for parking tickets",
 ];
 
-const pick = <T>(a: readonly T[]) => a[Math.floor(Math.random() * a.length)];
+export const pick = <T>(a: readonly T[]) => a[Math.floor(Math.random() * a.length)];
 const clamp = (v: number, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, v));
 let nextId = 1;
 
@@ -226,6 +229,9 @@ export function loadGame(): GameState | null {
     s.floors ??= 0;
     s.upgrades ??= [];
     s.upgradeBought ??= {};
+    s.liquidationPref ??= 0;
+    s.lastMediaQuarter ??= -10;
+    s.guarantee ??= 0;
     s.formerly ??= [];
     for (const e of s.employees) {
       e.salary ??= 45_000;
@@ -387,11 +393,14 @@ export function newCompany(prev?: GameState): GameState {
     boardDemands: [],
     cast: prev?.cast ?? structuredClone(DEFAULT_CAST),
     threads: [],
+    liquidationPref: 0,
+    guarantee: 0,
     audits: 0,
     zugTransfers: 0,
     actionsLeft: ACTIONS_PER_QUARTER,
     lastPartyQuarter: -10,
     lastRaiseQuarter: -10,
+    lastMediaQuarter: -10,
     lastRevenue: 0,
     eventResolvedQuarter: 0,
     recentEvents: [],
@@ -749,6 +758,7 @@ export function describe(s: GameState) {
       return `${SYSTEMS[k].name} ${s.systems[k].health}/100 (${o ? `only ${o.name} understands it` : "NOBODY understands it"})`;
     }).join("; ")}.`,
     s.crises.length ? `ONGOING CRISES: ${s.crises.map((k) => SYSTEMS[k].crisis).join(" ")}` : "",
+    s.liquidationPref || s.guarantee ? `Terms the CEO signed with investors:${s.liquidationPref ? ` ${fmt(s.liquidationPref)} liquidation preference;` : ""}${s.guarantee ? ` personally guaranteed ${fmt(s.guarantee)} of the debt;` : ""}`.replace(/;$/, ".") : "",
     s.kpis.length ? `Numbers the CEO promised investors: ${s.kpis.map((k) => `"${k.quote}" (due Q${k.dueQuarter})`).join("; ")}.` : "",
     s.alumni.length ? `Former employees: ${s.alumni.slice(0, 5).map((a) => `${a.name} (${a.reason} Q${a.leftQuarter}${a.atCompetitor ? ", now at a competitor" : ""}${a.grudge > 60 ? ", holds a grudge" : ""})`).join("; ")}.` : "",
     `Roster: ${s.employees
@@ -869,14 +879,16 @@ export function endQuarter(s: GameState): QuarterReport {
   }
   if (s.cash < 0) {
     s.reputation = clamp(s.reputation - 20);
+    const owed = Math.min(s.savings, s.guarantee);
+    s.savings -= owed;
     s.over = {
       win: false,
       canContinue: s.reputation >= 20,
       title: `${s.company} ran out of money`,
       text:
         s.reputation >= 20
-          ? `The company is dead. You post "What an incredible journey" on LinkedIn. Reputation ${s.reputation}/100 - someone will still hire you.`
-          : "The company is dead and your reputation is radioactive. Not even a crypto startup will hire you.",
+          ? `The company is dead. You post "What an incredible journey" on LinkedIn. Reputation ${s.reputation}/100 - someone will still hire you.${owed ? ` The personal guarantee you signed costs you ${fmt(owed)} of your own savings.` : ""}`
+          : `The company is dead and your reputation is radioactive. Not even a crypto startup will hire you.${owed ? ` And the fund calls in your personal guarantee: ${fmt(owed)}.` : ""}`,
     };
     return { lines, gone };
   }
@@ -1120,6 +1132,42 @@ export function canIPO(s: GameState) {
 }
 
 /** What's still missing for an IPO, for the UI. */
+export type Sweetener = "none" | "board" | "prefs" | "guarantee";
+
+export const SWEETENERS: Record<Sweetener, { label: string; blurb: string }> = {
+  none: { label: "Standard terms", blurb: "Just money for shares." },
+  board: { label: "Board seat", blurb: "A partner from the fund joins your board. Forever." },
+  prefs: { label: "2x liquidation preference", blurb: "On exit they get twice their money back before you see a cent." },
+  guarantee: { label: "Personal guarantee", blurb: "If the company dies, you personally repay half the round." },
+};
+
+const FUND_PARTNERS = ["Blake Whitfield", "Sloane Mercer", "Dev Kapoor", "Margot Lindqvist", "Tucker Hale", "Ines Okafor"];
+
+/** The money side of a closed round. Returns a line describing what you signed. */
+export function closeRound(s: GameState, amount: number, premoney: number, fair: number, sweetener: Sweetener): string {
+  s.cash += amount;
+  s.equity *= premoney / (premoney + amount);
+  log(s, `Raised ${fmt(amount)} at a ${fmt(premoney)} pre-money valuation.`);
+  // investors who paid a fantasy price expect the fantasy to come true
+  if (premoney > fair * 1.4 && !s.kpis.some((k) => k.metric === "valuation"))
+    addKpi(s, `Grow into the ${fmt(premoney)} valuation`, "valuation", premoney / fair, 4);
+  if (sweetener === "prefs") {
+    s.liquidationPref += amount * 2;
+    return `They get ${fmt(amount * 2)} off the top of any exit.`;
+  }
+  if (sweetener === "guarantee") {
+    s.guarantee += Math.round(amount / 2);
+    return `You personally guaranteed ${fmt(Math.round(amount / 2))}. Your apartment is now part of the cap table.`;
+  }
+  if (sweetener === "board") {
+    const name = FUND_PARTNERS.find((n) => !s.cast.some((c) => c.name === n)) ?? "Another partner";
+    s.cast.push({ name, role: `partner at the fund that led your round, now sits on your board of ${s.company} and has opinions about everything`, history: [] });
+    log(s, `${name} joins the board.`);
+    return `${name} joins your board. Their first email has 14 bullet points.`;
+  }
+  return "";
+}
+
 export function ipoBlocker(s: GameState) {
   if (s.quarter < IPO_MIN_QUARTER) return `Q${IPO_MIN_QUARTER}+`;
   if (valuation(s) < IPO_VALUATION) return `valuation ${fmt(IPO_VALUATION)}`;
@@ -1129,13 +1177,14 @@ export function ipoBlocker(s: GameState) {
 
 export function ipo(s: GameState) {
   // lock-up period, taxes and the bankers' cut: you see about 60% of the paper value
-  const payout = Math.round(valuation(s) * s.equity * 0.6);
+  const pref = Math.min(valuation(s), s.liquidationPref);
+  const payout = Math.round((valuation(s) - pref) * s.equity * 0.6);
   s.savings += payout;
   s.reputation = clamp(s.reputation + 20);
   s.over = {
     win: netWorth(s) >= FIRE_TARGET,
     canContinue: netWorth(s) < FIRE_TARGET,
     title: "IPO! The bell has been rung",
-    text: `${s.company} went public at ${fmt(valuation(s))}. After lock-up, taxes and the bankers, your ${(s.equity * 100).toFixed(1)}% stake nets you ${fmt(payout)}.${netWorth(s) >= FIRE_TARGET ? " FIRE achieved - you never open Slack again." : " Not enough for FIRE yet... time for another company."}`,
+    text: `${s.company} went public at ${fmt(valuation(s))}. After lock-up, taxes and the bankers, your ${(s.equity * 100).toFixed(1)}% stake nets you ${fmt(payout)}.${pref ? ` (The liquidation preference you signed took ${fmt(pref)} off the top first.)` : ""}${netWorth(s) >= FIRE_TARGET ? " FIRE achieved - you never open Slack again." : " Not enough for FIRE yet... time for another company."}`,
   };
 }

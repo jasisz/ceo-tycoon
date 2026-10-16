@@ -17,10 +17,12 @@ Without a key the game still runs with a dumb heuristic "mock GM". Progress auto
 
 ## Offices
 
-Garage → coworking → open space (+ east wing) → glass campus, or go remote-first and run the
+You start in your aunt's garage, paying yourself ramen money. Garage → coworking → open space (+ east wing) → glass campus, or go remote-first and run the
 company as a Zoom grid. Hire beyond your desks and people hot-desk on beanbags (morale tanks).
 The office shop sells perks with trade-offs (climbing wall, beer fridge, AI receptionist, valuation
-LED wall...), all visible in the office and known to the LLM's office gossip.
+LED wall...), all visible in the office and known to the LLM's office gossip. Perks cost upkeep
+every quarter, and the novelty wears off: after a few quarters nobody notices the upside (the
+downsides stay).
 
 ## Things come back to bite you
 
@@ -32,6 +34,12 @@ LED wall...), all visible in the office and known to the LLM's office gossip.
 - **Alumni** hold grudges, post Glassdoor reviews, join competitors, and can be rehired as contractors
   at 3x — if your phone call convinces them. Whoever processed your Zug invoices may blow the whistle.
 - **Investor KPIs**: numbers you throw around in a pitch get written down and checked later.
+- **Term sheets**: you pick the ask and the valuation (fair, optimistic, delusional) and can sweeten
+  it with a board seat, a 2x liquidation preference or a personal guarantee. The LLM plays the fund:
+  accept, counter or pass. The engine enforces what you signed — the preference eats your IPO, the
+  guarantee eats your savings, the board member sticks around.
+- **Media**: podcasts, a journalist who asks about whatever she's heard (Zug included), LinkedIn
+  posts, paid features. The team reads it too.
 
 ## How the LLM is wired in
 

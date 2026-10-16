@@ -86,7 +86,7 @@ async function withFallback<T>(llm: () => Promise<T>, mock: () => T): Promise<T 
 
 // ---------- judge: free-text CEO actions ----------
 
-export type Scene = "allhands" | "investors" | "employee" | "event" | "board" | "rehire" | "pivot";
+export type Scene = "allhands" | "investors" | "employee" | "event" | "board" | "rehire" | "pivot" | "media";
 
 export interface JudgeRequest {
   scene: Scene;
@@ -96,7 +96,26 @@ export interface JudgeRequest {
   eventTitle?: string;
   /** For "event": cash/headcount range spanned by the event's preset choices. Free text can't escape it. */
   bounds?: { cash: [number, number]; headcount: [number, number] };
+  /** For "investors": what the CEO is asking for. The fair valuation comes from the engine. */
+  terms?: PitchTerms;
+  /** For "media": who is interviewing and what they asked. */
+  outlet?: { name: string; brief: string; question: string };
 }
+
+export type Sweetener = "none" | "board" | "prefs" | "guarantee";
+export interface PitchTerms {
+  ask: number;
+  premoney: number;
+  fair: number;
+  sweetener: Sweetener;
+}
+
+const SWEETENER_TEXT: Record<Sweetener, string> = {
+  none: "no extra terms",
+  board: "the fund gets a seat on the board (a partner will sit in every meeting and has opinions)",
+  prefs: "2x liquidation preference (on any exit, investors get twice their money back before anyone else)",
+  guarantee: "a personal guarantee (if the company dies, the CEO personally repays half of the round)",
+};
 
 /** Effects on specific, named employees - so "Alex finally gets the raise" actually sticks. */
 const peopleSchema = {
@@ -201,6 +220,19 @@ const judgeSchema = {
     accepted: { type: "boolean", description: "Only for the 'rehire' scene: does the former employee agree to come back? false for all other scenes." },
     people: peopleSchema,
     company: companySchema,
+    deal: {
+      type: "object",
+      description:
+        "Only for the 'investors' scene: the fund's answer to the CEO's terms. For other scenes: verdict 'pass', 0, 0, empty line.",
+      properties: {
+        verdict: { type: "string", enum: ["accept", "counter", "pass"] },
+        premoney: { type: "integer", description: "Pre-money valuation in USD the fund agrees to (counter: what they offer instead)" },
+        amount: { type: "integer", description: "USD the fund invests (counter: can be less than asked)" },
+        line: { type: "string", description: "What the lead partner says when giving the answer, in character" },
+      },
+      required: ["verdict", "premoney", "amount", "line"],
+      additionalProperties: false,
+    },
     kpis: {
       type: "array",
       description:
@@ -218,7 +250,7 @@ const judgeSchema = {
       },
     },
   },
-  required: ["deltas", "consequences", "narration", "reactions", "promises", "bullshit_score", "memory", "accepted", "people", "company", "kpis"],
+  required: ["deltas", "consequences", "narration", "reactions", "promises", "bullshit_score", "memory", "accepted", "people", "company", "deal", "kpis"],
   additionalProperties: false,
 } as const;
 
@@ -233,6 +265,7 @@ const Judgement = z.object({
   accepted: z.boolean(),
   people: PeopleEffects,
   company: Company,
+  deal: z.object({ verdict: z.enum(["accept", "counter", "pass"]), premoney: z.number(), amount: z.number(), line: z.string() }),
   kpis: z.array(z.object({ quote: z.string(), metric: z.enum(["revenue", "headcount", "valuation", "hype"]), multiplier: z.number(), quarters: z.number() })),
 });
 export type Judgement = z.infer<typeof Judgement>;
@@ -240,11 +273,13 @@ export type Judgement = z.infer<typeof Judgement>;
 const SCENE_BRIEF: Record<Scene, string> = {
   allhands: "The CEO is giving a speech at a company all-hands meeting. Employees react. Investors only hear about it second-hand (small hype effect).",
   investors:
-    "The CEO is pitching to investors for a funding round. Investor reactions dominate; employees barely notice unless the CEO promises layoffs or similar. Record every concrete numeric promise about the future in kpis - investors write those down.",
+    "The CEO is pitching to investors for a funding round, on the terms below. Investor reactions dominate; employees barely notice unless the CEO promises layoffs or similar. Record every concrete numeric promise about the future in kpis - investors write those down. Then decide the deal like a real, greedy fund: compare the asked valuation with the fair one, look at hype, revenue, burn, crises and suspicion. A fair ask with a decent pitch usually gets accepted; an inflated valuation needs an exceptional pitch or a sweetener, otherwise counter lower or pass. Sweeteners make yes easier. Low hype (<35) or open crises mean most funds pass. Never invest more than asked.",
   board:
     "The board of directors has called the CEO in to explain the problems listed below. The board is skeptical and has read the numbers. Vague corporate speak and blaming the market raise suspicion; owning the problem with a concrete plan lowers it. Blaming a specific former employee can work, but they may hear about it.",
   pivot:
     "The CEO is announcing a pivot: the company will now do something else, described below in their own words. Fill company.product with a crisp description of the new thing (and company.name if they rename it, or if a rebrand is obviously implied). Investors (hype) love whatever is fashionable; employees (morale) hate whiplash, the further from the old product the worse. Reactions come from employees and one investor.",
+  media:
+    "The CEO is doing a media appearance (outlet and question below) and answers in their own words. The public, investors (hype) and the team (morale - they read it too) react. Bold claims raise hype but get remembered: put concrete numbers in kpis only if investors would hold them to it, and put anything the team would feel betrayed by in people or morale. A journalist who catches evasion or a lie about money raises suspicion; an answer that admits a real problem with a plan can lower it. Reactions: the host or journalist first, then the internet (a commenter, an employee posting on Slack, an investor).",
   rehire:
     "The CEO is trying to convince a former employee to come back as a well-paid contractor, usually because only they understand a system that is now broken. They remember everything in their history and their grudge level. Set accepted=true only if the CEO genuinely addresses what went wrong (an apology that sounds real, paying what was promised, respect). Groveling corporate speak or new promises from a CEO who broke old ones should fail. The reaction is that person speaking.",
   employee:
@@ -252,6 +287,15 @@ const SCENE_BRIEF: Record<Scene, string> = {
   event:
     "The CEO is responding in their own words to a company event. Judge the response in light of the event. Also decide the material consequences (cash, headcount): talking does not make a cost disappear - if every sensible way out of this event costs money or people, so does this one, unless the response genuinely and cleverly avoids it.",
 };
+
+function mockDeal(req: JudgeRequest): Judgement["deal"] {
+  const tm = req.terms;
+  const hype = Number(/Investor hype (\d+)/.exec(req.context)?.[1] ?? 50);
+  if (req.scene !== "investors" || !tm || hype < 35) return { verdict: "pass", premoney: 0, amount: 0, line: "[mock] We'll circle back." };
+  const bonus = tm.sweetener === "none" ? 1 : 1.4;
+  if (tm.premoney <= tm.fair * 1.2 * bonus) return { verdict: "accept", premoney: tm.premoney, amount: tm.ask, line: "[mock] Let's do it." };
+  return { verdict: "counter", premoney: tm.fair, amount: Math.round(tm.ask * 0.7), line: "[mock] Love the energy. Here's what it's actually worth." };
+}
 
 function mockJudge(req: JudgeRequest): Judgement {
   const t = req.text.toLowerCase();
@@ -286,8 +330,19 @@ function mockJudge(req: JudgeRequest): Judgement {
         ? [{ name: req.npc.name, memory: "[mock] The CEO gave me a raise on the spot.", salary_change: 5_000, mood_change: 15, new_quirk: "", leaves: false }]
         : [],
     accepted: req.scene === "rehire" && ((req.npc?.grudge ?? 50) < 55 || /\b(pay|sorry|apolog)/.test(t)),
+    deal: mockDeal(req),
     kpis: inv && /(\d+)\s*x/.test(t) ? [{ quote: req.text.slice(0, 80), metric: "revenue" as const, multiplier: Number(/(\d+)\s*x/.exec(t)![1]), quarters: 4 }] : [],
   };
+}
+
+/** The fund may say anything; the money obeys the terms on the table. */
+function clampDeal(d: Judgement["deal"], tm?: PitchTerms): Judgement["deal"] {
+  const line = d.line.slice(0, 240);
+  if (!tm || d.verdict === "pass") return { verdict: "pass", premoney: 0, amount: 0, line };
+  if (d.verdict === "accept") return { verdict: "accept", premoney: tm.premoney, amount: tm.ask, line };
+  const premoney = Math.round(Math.max(tm.fair * 0.5, Math.min(tm.premoney, d.premoney)));
+  const amount = Math.round(Math.max(0, Math.min(tm.ask, d.amount, premoney * 0.5)));
+  return amount > 0 ? { verdict: "counter", premoney, amount, line } : { verdict: "pass", premoney: 0, amount: 0, line };
 }
 
 export function judge(req: JudgeRequest) {
@@ -299,7 +354,13 @@ export function judge(req: JudgeRequest) {
   const ev = req.eventTitle
     ? `\nEvent being responded to: ${req.eventTitle}\nThe preset choices for this event ranged from cash ${b.cash[0]} to ${b.cash[1]} USD and headcount ${b.headcount[0]} to ${b.headcount[1]}; stay within that range.`
     : "";
-  const user = `${SCENE_BRIEF[req.scene]}${npc}${ev}\n\nGame state:\n${req.context}\n\nThe CEO says/does:\n"""${req.text.slice(0, 2000)}"""`;
+  const tm = req.scene === "investors" ? req.terms : undefined;
+  const terms = tm
+    ? `\nThe CEO asks for ${tm.ask} USD at a ${tm.premoney} USD pre-money valuation (${(tm.premoney / tm.fair).toFixed(1)}x what the numbers justify, fair is ~${tm.fair} USD), offering ${SWEETENER_TEXT[tm.sweetener]}.`
+    : "";
+  const o = req.scene === "media" ? req.outlet : undefined;
+  const media = o ? `\nOutlet: ${o.name.slice(0, 80)} - ${o.brief.slice(0, 300)}\nThe question: "${o.question.slice(0, 300)}"` : "";
+  const user = `${SCENE_BRIEF[req.scene]}${npc}${ev}${terms}${media}\n\nGame state:\n${req.context}\n\nThe CEO says/does:\n"""${req.text.slice(0, 2000)}"""`;
   return withFallback(
     async () => {
       const j = Judgement.parse(await ask(WORLD, user, judgeSchema));
@@ -319,6 +380,7 @@ export function judge(req: JudgeRequest) {
               ? clampPeople(j.people).filter((p) => p.name.toLowerCase().includes((req.npc?.name ?? "").split(" ")[0].toLowerCase()))
               : clampPeople(j.people),
         kpis: req.scene === "investors" ? j.kpis.slice(0, 3) : [],
+        deal: clampDeal(j.deal, tm),
         company: req.scene === "employee" || req.scene === "rehire" ? EMPTY_COMPANY : clampCompany(j.company),
         memory: j.memory.slice(0, 200),
       };
