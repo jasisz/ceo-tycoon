@@ -1111,7 +1111,7 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private animatePerson(p: Person, time: number) {
-    const t = time / 110 + p.phase;
+    const t = time / 150 + p.phase; // leg cadence matches the (unhurried) walking speed
     if (p.walking) {
       p.legL.y = Math.sin(t) * 2.5;
       p.legR.y = -Math.sin(t) * 2.5;
@@ -1140,7 +1140,7 @@ export class OfficeScene extends Phaser.Scene {
     return pts.filter((q, i, arr) => Math.hypot(q.x - (i ? arr[i - 1].x : from.x), q.y - (i ? arr[i - 1].y : from.y)) > 0.05);
   }
 
-  private walkTo(p: Person, to: Pt, done?: () => void, msPerTile = 380) {
+  private walkTo(p: Person, to: Pt, done?: () => void, msPerTile = 650) {
     p.timer?.remove();
     this.tweens.killTweensOf(p.g);
     p.seated = false;
@@ -1297,7 +1297,7 @@ export class OfficeScene extends Phaser.Scene {
         targets: dog.g,
         x: t.x,
         y: t.y,
-        duration: Math.max(200, dist * 500),
+        duration: Math.max(200, dist * 800),
         onUpdate: () => this.place(dog),
         onComplete: () => {
           dog.walking = false;
@@ -1466,7 +1466,7 @@ export class OfficeScene extends Phaser.Scene {
                 this.emote(p.c, ["🧐", "📱", "🥤"][i]);
                 resolve();
               },
-              150,
+              300,
             ),
           ),
         ),
