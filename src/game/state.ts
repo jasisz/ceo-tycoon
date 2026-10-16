@@ -15,7 +15,7 @@ import {
 
 export const FIRE_TARGET = 5_000_000;
 export const ACTIONS_PER_QUARTER = 2;
-export const IPO_VALUATION = 45_000_000;
+export const IPO_VALUATION = 100_000_000;
 
 const REVENUE_PER_EMPLOYEE = 38_000;
 const CONTRACTOR_RATE = 3;
