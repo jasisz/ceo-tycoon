@@ -1854,6 +1854,7 @@ const game = new Phaser.Game({
   scale: { mode: Phaser.Scale.NONE, width: initial.w * dpr, height: initial.h * dpr, zoom: 1 / dpr },
   scene: [],
 });
+if ((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV) (window as unknown as { __game: Phaser.Game }).__game = game; // for browser tests
 window.addEventListener("resize", () => {
   const { w, h } = hostSize();
   game.scale.resize(w * dpr, h * dpr);

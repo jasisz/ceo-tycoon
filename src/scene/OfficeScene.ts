@@ -5,6 +5,7 @@
 import Phaser from "phaser";
 import type { Employee } from "../game/state";
 import type { OfficeTier } from "../game/office";
+import { titleOf } from "../game/org";
 
 const TW = 64; // tile width
 const TH = 32; // tile height
@@ -201,7 +202,10 @@ export class OfficeScene extends Phaser.Scene {
   private bubbles: Bubble[] = [];
   private dogs: Dog[] = [];
   private cb!: OfficeCallbacks;
-  private tooltip!: Phaser.GameObjects.Text;
+  private tooltip!: Phaser.GameObjects.Container;
+  private tipMain!: Phaser.GameObjects.Text;
+  private tipSub!: Phaser.GameObjects.Text;
+  private tipBg!: Phaser.GameObjects.Graphics;
   private ceo!: Phaser.GameObjects.Container;
   private res = 1;
   private L!: Layout;
@@ -271,15 +275,10 @@ export class OfficeScene extends Phaser.Scene {
     }
     this.fitCamera();
 
-    this.tooltip = this.txt(0, 0, "", {
-      fontFamily: "system-ui, sans-serif",
-      fontSize: "12px",
-      color: "#fff",
-      backgroundColor: "#2b2d42ee",
-      padding: { x: 6, y: 3 },
-    })
-      .setDepth(60_000)
-      .setVisible(false);
+    this.tipBg = this.add.graphics();
+    this.tipMain = this.txt(0, 0, "", { fontFamily: "system-ui, sans-serif", fontSize: "10.5px", fontStyle: "bold", color: "#ffffff", align: "center" }).setOrigin(0.5, 1);
+    this.tipSub = this.txt(0, 0, "", { fontFamily: "system-ui, sans-serif", fontSize: "8.5px", color: "#c3cadb", align: "center", wordWrap: { width: 150 } }).setOrigin(0.5, 1);
+    this.tooltip = this.add.container(0, 0, [this.tipBg, this.tipMain, this.tipSub]).setDepth(60_000).setVisible(false);
 
     if (this.remote) this.drawZoom();
     else {
@@ -295,6 +294,12 @@ export class OfficeScene extends Phaser.Scene {
     cam.setZoom(zoom);
     cam.centerOn(this.worldW / 2, this.worldH / 2 - (this.remote ? 0 : 10));
     this.res = Math.max(1, Math.ceil(zoom * 2) / 2);
+  }
+
+  /** Bubbles and labels stay the same on-screen size however far the camera zooms in (the garage is tiny). */
+  private uiScale() {
+    const cssZoom = this.cameras.main.zoom / (window.devicePixelRatio || 1);
+    return Math.max(0.55, Math.min(1, 1.25 / cssZoom));
   }
 
   iso(gx: number, gy: number): Pt {
@@ -862,7 +867,7 @@ export class OfficeScene extends Phaser.Scene {
     this.safe.add(zone);
     zone.on("pointerover", () => {
       const what = small ? "Shoebox labelled 'TAXES (DO NOT OPEN)'" : "Totally normal office safe";
-      this.tooltip.setText(amount ? `${what} · ${(amount / 1e6).toFixed(2)}M of "consulting"` : `${what} · empty`).setPosition(top.x + 20, top.y - h - 30).setVisible(true);
+      this.showTip({ x: top.x, y: top.y - h + 30 }, amount ? `${what} · $${(amount / 1e6).toFixed(2)}M of "consulting"` : `${what} · empty`);
     });
     zone.on("pointerout", () => this.hideTip());
     if (grew) this.tweens.add({ targets: this.safe, scaleY: { from: 0.9, to: 1 }, duration: 300, ease: "Back.out" });
@@ -993,8 +998,16 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
+  /** Compact label right above someone's head: "Name · details" puts the details on a smaller second line. */
   private showTip(obj: { x: number; y: number }, text: string) {
-    this.tooltip.setText(text).setPosition(obj.x + 14, obj.y - 76).setVisible(true);
+    const [main, ...rest] = text.split(" · ");
+    const sub = rest.join(" · ");
+    this.tipSub.setText(sub).setVisible(!!sub).setY(0);
+    this.tipMain.setText(main).setY(sub ? -this.tipSub.height : 0);
+    const w = Math.max(this.tipMain.width, sub ? this.tipSub.width : 0) + 10;
+    const h = this.tipMain.height + (sub ? this.tipSub.height : 0) + 5;
+    this.tipBg.clear().fillStyle(0x2b2d42, 0.93).fillRoundedRect(-w / 2, -h + 2.5, w, h, 5);
+    this.tooltip.setScale(this.uiScale()).setPosition(obj.x, obj.y - (this.remote ? 84 : 54)).setVisible(true);
     this.input.setDefaultCursor("pointer");
   }
 
@@ -1066,7 +1079,7 @@ export class OfficeScene extends Phaser.Scene {
     this.people.set(e.id, p);
     f.c.setInteractive(new Phaser.Geom.Rectangle(-14, -56, 28, 58), Phaser.Geom.Rectangle.Contains);
     f.c.on("pointerdown", () => this.cb.onEmployeeClick(e.id));
-    f.c.on("pointerover", () => this.showTip(f.c, `${p.data.name} · ${p.data.role}${!this.remote && !this.hasDesk(p.data) ? " · no desk 😤" : ""}`));
+    f.c.on("pointerover", () => this.showTip(f.c, `${p.data.name} · ${titleOf(p.data)}${!this.remote && !this.hasDesk(p.data) ? " · no desk 😤" : ""}`));
     f.c.on("pointerout", () => this.hideTip());
     this.time.addEvent({
       delay: 2500 + Math.random() * 3000,
@@ -1232,7 +1245,7 @@ export class OfficeScene extends Phaser.Scene {
     this.people.delete(id);
     p.timer?.remove();
     this.drawMouth(p.face, 10);
-    this.bubbleOn(p.c, Phaser.Utils.Array.GetRandom(["Bye.", "Good luck with the IPO lol", "Taking my stapler.", "See you on LinkedIn.", "I'm keeping the hoodie."]));
+    this.bubbleOn(p.c, Phaser.Utils.Array.GetRandom(["Bye.", "Good luck with the IPO lol", "Taking my stapler.", "See you on LinkedIn.", "I'm keeping the hoodie."]), false, `${p.data.name.split(" ")[0]} · ${titleOf(p.data)}`);
     const targets: Phaser.GameObjects.GameObject[] = p.camOff ? [p.c, p.camOff] : [p.c];
     const vanish = () =>
       this.tweens.add({
@@ -1316,27 +1329,35 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
-  private bubbleOn(target: Phaser.GameObjects.Container, text: string, dark = false) {
+  private bubbleOn(target: Phaser.GameObjects.Container, text: string, dark = false, who = "") {
     const t = this.txt(0, 0, text, {
       fontFamily: "system-ui, sans-serif",
-      fontSize: "12px",
+      fontSize: "10.5px",
       color: dark ? "#ffffff" : "#2b2d42",
-      wordWrap: { width: 180 },
+      wordWrap: { width: 130 },
       align: "center",
+      lineSpacing: -1,
     }).setOrigin(0.5, 1);
-    const pad = 7;
+    const meta = who
+      ? this.txt(0, 0, who, { fontFamily: "system-ui, sans-serif", fontSize: "8.5px", color: dark ? "#b8c0d6" : "#7a8194", align: "center" }).setOrigin(0.5, 1)
+      : null;
+    const padX = 6, padY = 4;
+    const tw = Math.max(t.width, meta?.width ?? 0);
+    const th = t.height + (meta ? meta.height + 1 : 0);
+    if (meta) t.setY(-meta.height - 1);
     const bg = this.add.graphics();
-    const w = t.width + pad * 2, h = t.height + pad * 2;
-    bg.fillStyle(dark ? 0x2b2d42 : 0xffffff, 0.97).fillRoundedRect(-w / 2, -h + pad, w, h, 9);
-    bg.lineStyle(1.5, INK, 0.9).strokeRoundedRect(-w / 2, -h + pad, w, h, 9);
-    bg.fillStyle(dark ? 0x2b2d42 : 0xffffff, 0.97).fillTriangle(-6, pad - 0.5, 6, pad - 0.5, 0, pad + 8);
-    bg.lineStyle(1.5, INK, 0.9).lineBetween(-6, pad, 0, pad + 8).lineBetween(6, pad, 0, pad + 8);
-    const offset = this.remote ? 95 : 66;
-    const box = this.add.container(target.x, target.y - offset, [bg, t]).setDepth(55_000);
+    const w = tw + padX * 2, h = th + padY * 2;
+    bg.fillStyle(dark ? 0x2b2d42 : 0xffffff, 0.97).fillRoundedRect(-w / 2, -h + padY, w, h, 7);
+    bg.lineStyle(1.2, INK, 0.85).strokeRoundedRect(-w / 2, -h + padY, w, h, 7);
+    bg.fillStyle(dark ? 0x2b2d42 : 0xffffff, 0.97).fillTriangle(-4, padY - 0.5, 4, padY - 0.5, 0, padY + 5);
+    bg.lineStyle(1.2, INK, 0.85).lineBetween(-4, padY, 0, padY + 5).lineBetween(4, padY, 0, padY + 5);
+    const offset = this.remote ? 86 : 56;
+    const box = this.add.container(target.x, target.y - offset, meta ? [bg, t, meta] : [bg, t]).setDepth(55_000);
     const bubble: Bubble = { target, box, offset };
     this.bubbles.push(bubble);
-    box.setScale(0.4).setAlpha(0);
-    this.tweens.add({ targets: box, scale: 1, alpha: 1, duration: 200, ease: "Back.out" });
+    const k = this.uiScale();
+    box.setScale(0.4 * k).setAlpha(0);
+    this.tweens.add({ targets: box, scale: k, alpha: 1, duration: 200, ease: "Back.out" });
     this.time.delayedCall(3800 + text.length * 40, () =>
       this.tweens.add({
         targets: box,
@@ -1352,11 +1373,11 @@ export class OfficeScene extends Phaser.Scene {
 
   bubble(id: number, text: string) {
     const p = this.people.get(id);
-    if (p) this.bubbleOn(p.c, text);
+    if (p) this.bubbleOn(p.c, text, false, `${p.data.name.split(" ")[0]} · ${titleOf(p.data)}`);
   }
 
   ceoBubble(text: string) {
-    this.bubbleOn(this.ceo, text, true);
+    this.bubbleOn(this.ceo, text, true, "You · CEO");
   }
 
   /** Everyone walks to the all-hands spot (meeting room, event space, auditorium...), then back. */
