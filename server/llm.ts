@@ -483,6 +483,58 @@ ${context}`;
   );
 }
 
+// ---------- genesis: the company and its people ----------
+
+const Genesis = z.object({
+  company: z.string(),
+  product: z.string(),
+  founding_story: z.string(),
+  employees: z.array(z.object({ name: z.string(), role: z.string(), quirk: z.string() })),
+});
+
+export function generateGenesis(context: string, staff: number, roles: string[]) {
+  const schema = {
+    type: "object",
+    properties: {
+      company: { type: "string", description: "Company name, short and plausible-but-ridiculous startup name, e.g. 'Synergix Inc.'" },
+      product: { type: "string", description: "What it makes, lowercase noun phrase of max ~8 words, a satirical but believable startup idea" },
+      founding_story: { type: "string", description: "2-3 sentences: how the company started and how the CEO ended up running it" },
+      employees: {
+        type: "array",
+        description: `Exactly ${staff} employees`,
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "Full name; international mix; no famous people; no repeated first names" },
+            role: { type: "string", enum: roles },
+            quirk: { type: "string", description: "Distinct satirical trait, lowercase, starts with a verb phrase, e.g. 'keeps a spreadsheet of every promise the CEO made'; some should relate to the product" },
+          },
+          required: ["name", "role", "quirk"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["company", "product", "founding_story", "employees"],
+    additionalProperties: false,
+  };
+  const user = `Create a brand-new startup the CEO is about to run, and its first ${staff} employees. Invent an original company name, product and people from scratch. Fit it to the situation (a garage means two-founder chaos, a campus means late-stage bloat; a CEO on their third company with a bad reputation gets a sketchier gig). Make the people feel like a real, specific team: different roles (cover engineering, product and sales where you can), quirks that could turn into stories later.
+
+Game state:
+${context}`;
+  return withFallback(
+    async () => {
+      const g = Genesis.parse(await ask(WORLD, user, schema, 2500));
+      return {
+        company: g.company.trim().slice(0, 40),
+        product: g.product.trim().replace(/\.$/, "").slice(0, 70),
+        founding_story: g.founding_story.slice(0, 500),
+        employees: g.employees.slice(0, staff).map((e) => ({ name: e.name.slice(0, 40), role: roles.includes(e.role) ? e.role : roles[0], quirk: e.quirk.slice(0, 120) })),
+      };
+    },
+    () => ({ company: "", product: "", founding_story: "", employees: [] }),
+  );
+}
+
 // ---------- epilogue: how the company will be remembered ----------
 
 const epilogueSchema = {

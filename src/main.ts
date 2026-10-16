@@ -56,6 +56,9 @@ import {
   applyPeople,
   nextEpisodeFor,
   ipoBlocker,
+  applyGenesis,
+  ROLES,
+  type Genesis,
   payZug,
   zugSuspicion,
   ZUG_AMOUNT,
@@ -1136,11 +1139,32 @@ async function welcomeBack() {
   void gossip();
 }
 
+/** Only what the world knows before the company exists - not the placeholder name or roster. */
+function genesisContext() {
+  return [
+    `Office: ${office(s).name} (${office(s).blurb}). Starting cash ${fmt(s.cash)}. ${s.employees.length} employees.`,
+    s.career > 1 ? `This is the CEO's company #${s.career}. Reputation ${s.reputation}/100. Previous companies: ${s.formerly.concat(s.log.filter((l) => l.includes("former employee"))).join("; ") || "unknown"}.` : "This is the CEO's first company.",
+    `People who know the CEO: ${s.cast.map((c) => `${c.name} (${c.role})`).join("; ")}.`,
+  ].join("\n");
+}
+
 async function intro() {
+  if (s.quarter === 1 && !s.genesisDone) {
+    loading("Incorporating in Delaware...");
+    try {
+      const g = await api<Genesis & { mock: boolean }>("/api/genesis", { context: genesisContext(), staff: s.employees.length, roles: ROLES });
+      if (g.employees.length) applyGenesis(s, g);
+    } catch {
+      /* keep the randomly generated company */
+    }
+    s.genesisDone = true;
+    render();
+  }
   prefetchEvent();
   await modal(
     `<p class="kicker">${s.career > 1 ? `Career move #${s.career}` : "Welcome aboard"}</p>
     <h2>You are the new CEO of ${esc(s.company)}</h2>
+    ${s.founding ? `<p><i>${esc(s.founding)}</i></p>` : ""}
     <p>The product: <b>${esc(s.product)}</b>. ${s.employees.length} employees, ${fmt(s.cash)} in the bank, a ${office(s).emoji} ${esc(office(s).name.toLowerCase())} and a board that trusts you (for now).</p>
     <p>Your official goal: grow the company. Your <i>actual</i> goal: <b>FIRE</b> — ${fmt(FIRE_TARGET)} of personal net worth.
     Get there with an honest IPO… or with creative “consulting fees” to a lovely little company in Zug. Just keep an eye on that suspicion bar.</p>

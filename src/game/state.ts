@@ -126,6 +126,8 @@ export interface GameState {
   company: string;
   product: string;
   formerly: string[]; // previous names and products, newest first
+  founding?: string; // LLM-written origin story
+  genesisDone?: boolean;
   career: number; // how many companies you've run
   quarter: number;
   cash: number;
@@ -162,7 +164,7 @@ export interface GameState {
 
 const FIRST = ["Alex", "Sam", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Jamie", "Avery", "Quinn", "Drew", "Kai", "Robin", "Skyler", "Charlie", "Dana", "Emery", "Frankie", "Harper", "Jesse"];
 const LAST = ["Kowalski", "Nguyen", "Smith", "Garcia", "Müller", "Rossi", "Okafor", "Novak", "Silva", "Kim", "Patel", "Dubois", "Larsen", "Cohen"];
-const ROLES = ["Frontend Dev", "Backend Dev", "Product Manager", "QA Engineer", "Designer", "Data Scientist", "Sales Rep", "HR Partner", "DevOps", "Scrum Master", "Growth Hacker", "Office Manager"];
+export const ROLES = ["Frontend Dev", "Backend Dev", "Product Manager", "QA Engineer", "Designer", "Data Scientist", "Sales Rep", "HR Partner", "DevOps", "Scrum Master", "Growth Hacker", "Office Manager"];
 const QUIRKS = [
   "has been waiting for a raise for three years",
   "writes Rust after hours and mentions it constantly",
@@ -278,7 +280,6 @@ export const ownedBy = (s: GameState, id: number) => SYSTEM_IDS.filter((k) => s.
 function makeOwner(s: GameState, sys: SystemId, e: Employee) {
   s.systems[sys].owner = e.id;
   if (ownedBy(s, e.id).length === 1) e.salary += KEY_PERSON_PREMIUM;
-  e.quirk = `is the only one who understands ${SYSTEMS[sys].name.toLowerCase()}`;
   remember(e, s.quarter, `Became the only person who understands ${SYSTEMS[sys].name.toLowerCase()}.`);
 }
 
@@ -717,7 +718,7 @@ export function applyEffects(s: GameState, e: Effects): { hired: number; gone: E
 export function describe(s: GameState) {
   const runway = runwayQuarters(s);
   return [
-    `Company: ${s.company}. Product: ${s.product}. Quarter ${s.quarter}. CEO's company #${s.career}.${s.formerly.length ? ` Formerly: ${s.formerly.slice(0, 3).join("; ")}.` : ""}`,
+    `Company: ${s.company}. Product: ${s.product}.${s.founding ? ` Origin: ${s.founding}` : ""} Quarter ${s.quarter}. CEO's company #${s.career}.${s.formerly.length ? ` Formerly: ${s.formerly.slice(0, 3).join("; ")}.` : ""}`,
     `Employees: ${s.employees.length}. Morale ${s.morale}/100. Investor hype ${s.hype}/100. Board suspicion ${s.suspicion}/100.`,
     `Cash ${fmt(s.cash)}, runway ${runway === Infinity ? "profitable" : `${runway.toFixed(1)} quarters`}. Valuation ${fmt(valuation(s))}.`,
     `CEO secret offshore account: ${fmt(s.offshore)}. CEO reputation ${s.reputation}/100.`,
@@ -915,6 +916,37 @@ export function changeIdentity(s: GameState, c?: IdentityChange) {
   rememberAll(s, `Found out ${line}.`);
   log(s, `🔀 ${line[0].toUpperCase()}${line.slice(1)}. ${product ? "Engineering found out from TechCrunch." : "Marketing ordered new hoodies."}`);
   return line;
+}
+
+// ---------- genesis ----------
+
+export interface Genesis {
+  company: string;
+  product: string;
+  founding_story: string;
+  employees: { name: string; role: string; quirk: string }[];
+}
+
+/** Reskin a freshly created company with LLM-made identity and people. Numbers stay engine-made. */
+export function applyGenesis(s: GameState, g: Genesis) {
+  const placeholder = s.company;
+  if (g.company) s.company = g.company;
+  if (g.product) s.product = g.product;
+  if (g.founding_story) s.founding = g.founding_story;
+  g.employees.slice(0, s.employees.length).forEach((x, i) => {
+    const e = s.employees[i];
+    e.name = x.name;
+    if (ROLES.includes(x.role)) e.role = x.role;
+    e.quirk = x.quirk;
+    e.history = [];
+    e.salary = 38_000 + Math.round(Math.random() * 14) * 1_000;
+  });
+  // ownership follows the new roles
+  for (const k of SYSTEM_IDS) s.systems[k].owner = null;
+  assignOwners(s);
+  s.genesisDone = true;
+  s.log = s.log.filter((l) => !l.includes(placeholder)); // drop lines about the placeholder company
+  log(s, s.career > 1 ? `You land a new CEO gig at ${s.company}. Nobody checked your references.` : `Welcome, CEO of ${s.company} Product: ${s.product}.`);
 }
 
 // ---------- storylines ----------
