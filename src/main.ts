@@ -198,6 +198,9 @@ function loading(text: string) {
   $("#modal-card").innerHTML = `<div class="loading"><div class="spinner"></div><p>${esc(text)}</p></div>`;
   $("#modal").classList.remove("hidden");
 }
+function modalOpen() {
+  return !$("#modal").classList.contains("hidden");
+}
 function closeModal() {
   $("#modal").classList.add("hidden");
 }
@@ -566,6 +569,8 @@ const game = new Phaser.Game({
   parent: "game",
   backgroundColor: "#e9ecf8",
   antialias: true,
+  // Only react to pointer events that actually hit the canvas, never clicks on HTML modals above it.
+  input: { windowEvents: false },
   scale: { mode: Phaser.Scale.NONE, width: initial.w * dpr, height: initial.h * dpr, zoom: 1 / dpr },
   scene: [],
 });
@@ -576,8 +581,8 @@ window.addEventListener("resize", () => {
 
 game.scene.add("office", OfficeScene, true, {
   cb: {
-    onEmployeeClick: (id: number) => void talkTo(id),
-    onCeoClick: () => void ceoPanel(),
+    onEmployeeClick: (id: number) => modalOpen() || void talkTo(id),
+    onCeoClick: () => modalOpen() || void ceoPanel(),
     getMood: (id: number) => {
       const e = s.employees.find((x) => x.id === id);
       return e ? employeeMood(s, e) : 50;
