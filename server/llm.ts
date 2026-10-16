@@ -1,5 +1,5 @@
 // LLM "game master": judges free-text player actions and invents quarterly events.
-// The deterministic engine owns the numbers; everything returned here is clamped
+// The rule-based engine owns the numbers; everything returned here is clamped
 // on both server and client, so the model can flavour the game but never break it.
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
@@ -94,12 +94,24 @@ export interface JudgeRequest {
   context: string; // compact game-state summary from the client
   npc?: { name: string; role: string; quirk: string; mood: number };
   eventTitle?: string;
+  /** For "event": cash/headcount range spanned by the event's preset choices. Free text can't escape it. */
+  bounds?: { cash: [number, number]; headcount: [number, number] };
 }
 
 const judgeSchema = {
   type: "object",
   properties: {
     deltas: deltasSchema,
+    consequences: {
+      type: "object",
+      description: "Material consequences. Only used for the 'event' scene; use 0 for everything else.",
+      properties: {
+        cash: { type: "integer", description: "Company cash change in USD" },
+        headcount: { type: "integer", description: "Employees hired (+) or lost (-)" },
+      },
+      required: ["cash", "headcount"],
+      additionalProperties: false,
+    },
     narration: { type: "string", description: "2-3 sentences describing what happened, satirical, past tense" },
     reactions: {
       type: "array",
@@ -127,12 +139,13 @@ const judgeSchema = {
     },
     bullshit_score: { type: "integer", description: "0-100, how much corporate BS the text contained" },
   },
-  required: ["deltas", "narration", "reactions", "promises", "bullshit_score"],
+  required: ["deltas", "consequences", "narration", "reactions", "promises", "bullshit_score"],
   additionalProperties: false,
 } as const;
 
 const Judgement = z.object({
   deltas: Deltas,
+  consequences: z.object({ cash: z.number(), headcount: z.number() }),
   narration: z.string(),
   reactions: z.array(z.object({ speaker: z.string(), line: z.string() })),
   promises: z.array(z.object({ text: z.string(), quarters_until_due: z.number(), cost: z.number() })),
@@ -144,14 +157,16 @@ const SCENE_BRIEF: Record<Scene, string> = {
   allhands: "The CEO is giving a speech at a company all-hands meeting. Employees react. Investors only hear about it second-hand (small hype effect).",
   investors: "The CEO is pitching to investors for a funding round. Investor reactions dominate; employees barely notice unless the CEO promises layoffs or similar.",
   employee: "The CEO is having a one-on-one with a single employee. Effects should be small (morale within -6..6, hype ~0). The reaction must be that employee speaking in character.",
-  event: "The CEO is responding in their own words to a company event. Judge the response in light of the event.",
+  event:
+    "The CEO is responding in their own words to a company event. Judge the response in light of the event. Also decide the material consequences (cash, headcount): talking does not make a cost disappear - if every sensible way out of this event costs money or people, so does this one, unless the response genuinely and cleverly avoids it.",
 };
 
 function mockJudge(req: JudgeRequest): Judgement {
   const t = req.text.toLowerCase();
-  const count = (words: string[]) => words.filter((w) => t.includes(w)).length;
-  const buzz = count(["ai", "synerg", "platform", "disrupt", "family", "journey", "leverage", "paradigm", "web3", "agentic"]);
-  const layoffs = count(["layoff", "fire", "let go", "restructur", "rightsiz"]);
+  // word-prefix matches, so "said" isn't "ai" and "FIRE" (the CEO's dream) isn't "firing people"
+  const count = (words: string[]) => words.filter((w) => new RegExp(`\\b${w}`).test(t)).length;
+  const buzz = count(["ai\\b", "synerg", "platform", "disrupt", "family", "journey", "leverage", "paradigm", "web3", "agentic"]);
+  const layoffs = count(["layoff", "lay off", "firing", "fire (?:you|people|staff|them|half)", "let (?:you |people |them )?go", "restructur", "rightsiz"]);
   const bonus = count(["bonus", "raise", "pizza", "party", "equity"]);
   const swiss = count(["swiss", "cayman", "offshore", "transfer", "consulting fee"]);
   const inv = req.scene === "investors";
@@ -160,8 +175,11 @@ function mockJudge(req: JudgeRequest): Judgement {
     hype: inv ? buzz * 5 + layoffs * 3 - 2 : buzz * 2,
     suspicion: swiss * 10,
   });
+  const [cLo, cHi] = req.bounds?.cash ?? [0, 0];
+  const [hLo, hHi] = req.bounds?.headcount ?? [0, 0];
   return {
     deltas,
+    consequences: { cash: Math.round((cLo + cHi) / 2), headcount: Math.round((hLo + hHi) / 2) },
     narration: `[mock] The ${req.scene === "investors" ? "investors" : "team"} listened politely. Someone counted ${buzz} buzzwords on a napkin.`,
     reactions: [{ speaker: req.npc?.name ?? (inv ? "Investor" : "Someone in the back"), line: buzz > 2 ? "Is this a speech or a LinkedIn post?" : "Okay... sure." }],
     promises: bonus > 0 && !inv ? [{ text: "That bonus you mentioned", quarters_until_due: 2, cost: 50_000 }] : [],
@@ -171,12 +189,22 @@ function mockJudge(req: JudgeRequest): Judgement {
 
 export function judge(req: JudgeRequest) {
   const npc = req.npc ? `\nYou are talking to: ${req.npc.name}, ${req.npc.role}. Quirk: ${req.npc.quirk}. Current mood ${req.npc.mood}/100.` : "";
-  const ev = req.eventTitle ? `\nEvent being responded to: ${req.eventTitle}` : "";
+  const b = req.scene === "event" ? req.bounds ?? { cash: [0, 0], headcount: [0, 0] } : { cash: [0, 0] as [number, number], headcount: [0, 0] as [number, number] };
+  const ev = req.eventTitle
+    ? `\nEvent being responded to: ${req.eventTitle}\nThe preset choices for this event ranged from cash ${b.cash[0]} to ${b.cash[1]} USD and headcount ${b.headcount[0]} to ${b.headcount[1]}; stay within that range.`
+    : "";
   const user = `${SCENE_BRIEF[req.scene]}${npc}${ev}\n\nGame state:\n${req.context}\n\nThe CEO says/does:\n"""${req.text.slice(0, 2000)}"""`;
   return withFallback(
     async () => {
       const j = Judgement.parse(await ask(WORLD, user, judgeSchema));
-      return { ...j, deltas: clampDeltas(j.deltas), reactions: j.reactions.slice(0, 3), promises: j.promises.slice(0, 2) };
+      const within = (v: number, [lo, hi]: [number, number]) => Math.max(Math.min(lo, hi), Math.min(Math.max(lo, hi), Math.round(v)));
+      return {
+        ...j,
+        deltas: clampDeltas(j.deltas),
+        consequences: { cash: within(j.consequences.cash, b.cash), headcount: within(j.consequences.headcount, b.headcount) },
+        reactions: j.reactions.slice(0, 3),
+        promises: j.promises.slice(0, 2),
+      };
     },
     () => mockJudge(req),
   );

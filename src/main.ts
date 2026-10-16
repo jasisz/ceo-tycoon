@@ -4,6 +4,7 @@ import { OfficeScene } from "./scene/OfficeScene";
 import {
   ACTIONS_PER_QUARTER,
   FIRE_TARGET,
+  IPO_VALUATION,
   PRODUCTS,
   applyEffects,
   canIPO,
@@ -45,6 +46,7 @@ import { FLOOR_COST, FLOOR_DESKS, FLOOR_RENT, OFFICES, UPGRADES, type OfficeTier
 
 interface Judgement {
   deltas: { morale: number; hype: number; suspicion: number };
+  consequences: { cash: number; headcount: number };
   narration: string;
   reactions: { speaker: string; line: string }[];
   promises: { text: string; quarters_until_due: number; cost: number }[];
@@ -199,7 +201,7 @@ const ACTIONS: Action[] = [
   { id: "pivot", group: "company", icon: "🔀", label: "Pivot", hint: "New product. Hype up, morale down.", enabled: () => true, sub: () => "hype ↑ morale ↓", run: pivot },
   { id: "realestate", group: "company", icon: "🏢", label: "Real estate", hint: "Move offices, lease another floor or go remote.", enabled: () => true, sub: () => `${office(s).emoji} ${office(s).name.split(" ")[0].toLowerCase()}`, run: realEstate },
   { id: "shop", group: "company", icon: "🛍️", label: "Office shop", hint: "Perks for the office. Costs money, not a decision.", free: true, enabled: () => true, sub: () => "free action", run: shop },
-  { id: "ipo", group: "company", icon: "🔔", label: "IPO", hint: "Q6+, valuation ≥ $60M. Cash out your equity.", enabled: () => canIPO(s), sub: () => (canIPO(s) ? "ring the bell!" : "Q6+ · $60M"), run: doIpo },
+  { id: "ipo", group: "company", icon: "🔔", label: "IPO", hint: `Q6+, valuation ≥ ${fmt(IPO_VALUATION)}. Cash out your equity.`, enabled: () => canIPO(s), sub: () => (canIPO(s) ? "ring the bell!" : `Q6+ · ${fmt(IPO_VALUATION)}`), run: doIpo },
   {
     id: "offshore",
     group: "shady",
@@ -668,12 +670,18 @@ async function startQuarter() {
         ${gone.length ? `<p>Gone: ${gone.map((g) => esc(g.name)).join(", ")}</p>` : ""}`, [{ label: "OK", value: "ok" }]);
     } else {
       loading("The game master is judging your response...");
-      const j = await judged("event", r.text, { eventTitle: `${ev.title}: ${ev.description}` });
-      applyEffects(s, j.deltas);
+      const span = (k: "cash" | "headcount") => {
+        const vals = ev.choices.map((c) => c.effects[k]);
+        return [Math.min(...vals), Math.max(...vals)] as [number, number];
+      };
+      const j = await judged("event", r.text, { eventTitle: `${ev.title}: ${ev.description}`, bounds: { cash: span("cash"), headcount: span("headcount") } });
+      const { gone } = applyEffects(s, { ...j.deltas, ...j.consequences });
+      if (gone.length) log(s, `Gone: ${gone.map((g) => g.name).join(", ")}.`);
       addPromises(j);
       log(s, `${ev.title} → you improvised. ${j.narration}`);
       showReactions(j);
-      await modal(judgementHtml(ev.title, j), [{ label: "OK", value: "ok" }]);
+      render();
+      await modal(judgementHtml(ev.title, j, "", { ...j.deltas, ...j.consequences }), [{ label: "OK", value: "ok" }]);
     }
   });
   gossip();

@@ -1,5 +1,5 @@
-// Deterministic simulation core. The LLM only proposes deltas; this module applies
-// and clamps them, runs the quarterly economy and decides win/lose conditions.
+// Rule-based simulation core (with a few dice rolls: audits, who gets laid off).
+// The LLM only proposes deltas; this module applies and clamps them, runs the quarterly economy and decides win/lose conditions.
 
 import {
   FLOOR_COST,
@@ -14,6 +14,7 @@ import {
 
 export const FIRE_TARGET = 5_000_000;
 export const ACTIONS_PER_QUARTER = 2;
+export const IPO_VALUATION = 45_000_000;
 
 const SALARY_PER_QUARTER = 45_000;
 const REVENUE_PER_EMPLOYEE = 34_000;
@@ -521,7 +522,7 @@ export function endQuarter(s: GameState): QuarterReport {
 
 /** Honest exit: IPO pays out the CEO's equity. */
 export function canIPO(s: GameState) {
-  return s.quarter >= 6 && valuation(s) >= 60_000_000 && s.cash > 0;
+  return s.quarter >= 6 && valuation(s) >= IPO_VALUATION && s.cash > 0;
 }
 
 export function ipo(s: GameState) {
