@@ -14,6 +14,7 @@ import {
   type OfficeTier,
   type UpgradeSpec,
 } from "./office";
+import { bureaucracyDrag, ceoSpan, cSuiteHype, CEO_SPAN, describeOrg, orphanReports, placeHire, reportsOf, stepOrg, titleOf, type Title } from "./org";
 
 export const FIRE_TARGET = 5_000_000;
 export const ACTIONS_PER_QUARTER = 2;
@@ -23,7 +24,7 @@ const REVENUE_PER_EMPLOYEE = 38_000;
 const CONTRACTOR_RATE = 3;
 const KEY_PERSON_PREMIUM = 20_000;
 /** Founders in a garage live on ramen; a campus CEO pays themselves like one. */
-export const ceoPay = (s: GameState) => OFFICES[s.office].ceoPay;
+export const ceoPay = (s: GameState) => ((s.payFrozenUntil ?? 0) > s.quarter ? 0 : OFFICES[s.office].ceoPay);
 const LICENSE_COST = 1_500;
 
 export interface Employee {
@@ -38,6 +39,8 @@ export interface Employee {
   history: string[]; // what this person remembers about the CEO (fed to the LLM)
   knowsZug?: boolean; // saw the "consulting" invoices
   contractor?: boolean; // rehired at CONTRACTOR_RATE x salary
+  managerId?: number | null; // null/undefined = reports to the CEO
+  title?: Title;
 }
 
 // ---------- company systems ----------
@@ -156,6 +159,9 @@ export interface GameState {
   threads: Thread[];
   liquidationPref: number; // paid to investors before you see a cent on exit
   guarantee: number; // what you personally owe if the company dies
+  cfo?: string; // the board's CFO, if they appointed one
+  payFrozenUntil?: number; // the board froze your salary until this quarter
+  lastBoardVote: number;
   audits: number; // audits survived at this company; auditors keep a file
   zugTransfers: number; // "consulting fees" paid at this company
   actionsLeft: number;
@@ -231,6 +237,7 @@ export function loadGame(): GameState | null {
     s.upgradeBought ??= {};
     s.liquidationPref ??= 0;
     s.lastMediaQuarter ??= -10;
+    s.lastBoardVote ??= 0;
     s.guarantee ??= 0;
     s.formerly ??= [];
     for (const e of s.employees) {
@@ -264,7 +271,7 @@ export function clearSave() {
   }
 }
 
-function makeEmployee(desk: number, quarter: number): Employee {
+export function makeEmployee(desk: number, quarter: number): Employee {
   return {
     id: nextId++,
     name: `${pick(FIRST)} ${pick(LAST)}`,
@@ -391,10 +398,12 @@ export function newCompany(prev?: GameState): GameState {
     alumni: [],
     kpis: [],
     boardDemands: [],
-    cast: prev?.cast ?? structuredClone(DEFAULT_CAST),
+    // board seats stay with the old company; the people stay in your life
+    cast: prev ? prev.cast.map((c) => (/sits on your board/.test(c.role) ? { ...c, role: `partner at a fund; used to sit on your board at ${prev.company}` } : c)) : structuredClone(DEFAULT_CAST),
     threads: [],
     liquidationPref: 0,
     guarantee: 0,
+    lastBoardVote: 0,
     audits: 0,
     zugTransfers: 0,
     actionsLeft: ACTIONS_PER_QUARTER,
@@ -577,7 +586,7 @@ export function systemsMultiplier(s: GameState) {
 }
 
 export function quarterlyRevenue(s: GameState) {
-  const mult = 1 + ownedUpgrades(s).reduce((a, u) => a + u.revenue, 0) - (s.office === "remote" ? 0.03 : 0);
+  const mult = 1 + ownedUpgrades(s).reduce((a, u) => a + u.revenue, 0) - (s.office === "remote" ? 0.03 : 0) - bureaucracyDrag(s);
   return Math.round(s.employees.length * REVENUE_PER_EMPLOYEE * (0.4 + s.morale / 100) * mult * systemsMultiplier(s));
 }
 
@@ -606,11 +615,55 @@ export function employeeMood(s: GameState, e: Employee) {
 export function hire(s: GameState, count: number) {
   let hired = 0;
   while (hired < count && s.employees.length < maxHeadcount(s)) {
-    s.employees.push(makeEmployee(-1, s.quarter));
+    const e = makeEmployee(-1, s.quarter);
+    s.employees.push(e);
+    placeHire(s, e);
     hired++;
   }
   compactDesks(s);
   return hired;
+}
+
+export type HirePerk = "none" | "signing" | "options" | "title";
+
+export const HIRE_PERKS: Record<HirePerk, { label: string; blurb: string }> = {
+  none: { label: "Just the salary", blurb: "Clean and honest." },
+  signing: { label: "$20k signing bonus", blurb: "Paid today from company cash." },
+  options: { label: "0.5% stock options", blurb: "Comes out of your own stake." },
+  title: { label: "Team Lead title", blurb: "Day one. Everyone who's been here longer will notice." },
+};
+
+export const RECRUIT_FEE = 15_000;
+
+/** A candidate said yes. They arrive with a name, a past and a memory of how they were hired. */
+export function hireCandidate(
+  s: GameState,
+  c: { name: string; role: string; quirk: string; ask: number },
+  salary: number,
+  perk: HirePerk,
+  memory: string,
+): Employee {
+  const e = makeEmployee(-1, s.quarter);
+  Object.assign(e, { name: c.name, role: c.role, quirk: c.quirk, salary, moodOffset: Math.round((salary / c.ask - 1) * 60) + 5 });
+  if (perk === "signing") s.cash -= 20_000;
+  if (perk === "options") {
+    s.equity = Math.max(0.01, s.equity - 0.005);
+    e.moodOffset += 8;
+  }
+  if (perk === "title") {
+    e.title = "lead";
+    e.salary += 5_000;
+  }
+  remember(e, s.quarter, memory || `Got hired by the CEO at ${fmt(salary)}/q.`);
+  s.employees.push(e);
+  placeHire(s, e);
+  compactDesks(s);
+  // a new hire in the right role may adopt an orphaned system
+  for (const sys of SYSTEM_IDS) if (s.systems[sys].owner === null && SYSTEMS[sys].roles.includes(e.role)) {
+    makeOwner(s, sys, e);
+    break;
+  }
+  return e;
 }
 
 /** How much someone resents you on the way out. */
@@ -625,6 +678,11 @@ export function removeEmployee(s: GameState, id: number, reason: Alumnus["reason
   const idx = s.employees.findIndex((e) => e.id === id);
   if (idx < 0) return null;
   const [e] = s.employees.splice(idx, 1);
+  orphanReports(s, e);
+  if (e.name === s.cfo) {
+    s.cfo = undefined;
+    if (reason !== "quit") s.boardDemands.push(`You ${reason === "fired" ? "fired" : "laid off"} ${e.name}, the CFO the board appointed.`);
+  }
   const owned = ownedBy(s, e.id);
   for (const sys of owned) s.systems[sys].owner = null;
   remember(e, s.quarter, reason === "quit" ? "Quit. Couldn't take it anymore." : `Was ${reason} by the CEO.`);
@@ -686,6 +744,7 @@ export function rehire(s: GameState, alumnusId: number) {
   };
   remember(e, s.quarter, `Came back as a contractor at ${CONTRACTOR_RATE}x the old pay.`);
   s.employees.push(e);
+  placeHire(s, e);
   for (const sys of a.owned) if (s.systems[sys].owner === null) s.systems[sys].owner = e.id;
   compactDesks(s);
   log(s, `${a.name} is back as a contractor (${fmt(payOf(e))}/q). ${a.owned.length ? `${a.owned.map((k) => SYSTEMS[k].emoji).join("")} has an owner again.` : ""}`);
@@ -693,14 +752,27 @@ export function rehire(s: GameState, alumnusId: number) {
 
 export const ZUG_AMOUNT = 250_000;
 export const ZUG_FEE = 0.1; // Herr Brunner's discretion is not free
-export const zugSuspicion = (s: GameState) => 10 + 3 * s.zugTransfers; // the pattern gets harder to miss
+export const zugSuspicion = (s: GameState) => 10 + 3 * s.zugTransfers + (s.cfo && s.employees.some((e) => e.name === s.cfo) ? 6 : 0); // the pattern gets harder to miss
 
-export function payZug(s: GameState) {
-  const susp = zugSuspicion(s);
-  applyEffects(s, { cash: -ZUG_AMOUNT, offshore: Math.round(ZUG_AMOUNT * (1 - ZUG_FEE)), suspicion: susp });
+export type ZugScheme = "invoice" | "retreat" | "licensing" | "crypto";
+
+export const ZUG_SCHEMES: Record<ZugScheme, { label: string; emoji: string; amount: number; fee: number; suspicion: number; blurb: string; brunner: string }> = {
+  invoice: { label: "Strategic consulting invoice", emoji: "🧾", amount: ZUG_AMOUNT, fee: ZUG_FEE, suspicion: 1, blurb: "The classic. Billing will see the invoice.", brunner: "A classic. Like a good fondue." },
+  retreat: { label: "Leadership retreat in the Alps", emoji: "🏔️", amount: 120_000, fee: 0.1, suspicion: 0.5, blurb: "Small and plausible. Until someone asks for the photos.", brunner: "A retreat. For one. How restorative." },
+  licensing: { label: "IP licensing from a Cyprus subsidiary", emoji: "🏛️", amount: 600_000, fee: 0.15, suspicion: 1.8, blurb: "Big money, big paper trail. Auditors love a subsidiary.", brunner: "Cyprus. Bold. I will need to make some calls, which I bill hourly." },
+  crypto: { label: "Treasury diversification into crypto", emoji: "🪙", amount: 300_000, fee: 0.05, suspicion: 1.2, blurb: "Investors find it visionary. Nobody can tell what happened. Including you.", brunner: "I do not touch crypto. My cousin does. He is in Liechtenstein." },
+};
+
+export const zugSchemeSuspicion = (s: GameState, k: ZugScheme) => Math.round(zugSuspicion(s) * ZUG_SCHEMES[k].suspicion);
+
+/** Move company money to Zug. `cover` is the LLM-judged adjustment for the cover story (-5..+8). */
+export function payZug(s: GameState, scheme: ZugScheme = "invoice", cover = 0) {
+  const z = ZUG_SCHEMES[scheme];
+  const susp = Math.max(1, zugSchemeSuspicion(s, scheme) + Math.max(-5, Math.min(8, Math.round(cover))));
+  applyEffects(s, { cash: -z.amount, offshore: Math.round(z.amount * (1 - z.fee)), suspicion: susp, hype: scheme === "crypto" ? 3 : 0 });
   s.zugTransfers++;
   const brunner = s.cast.find((c) => c.name === "Herr Brunner");
-  if (brunner) remember(brunner, s.quarter, `Received "consulting fee" #${s.zugTransfers} from ${s.company}. Kept 10%.`);
+  if (brunner) remember(brunner, s.quarter, `Received transfer #${s.zugTransfers} from ${s.company} (${z.label.toLowerCase()}, ${fmt(z.amount)}). Kept ${Math.round(z.fee * 100)}%.`);
   noticeZug(s);
   return susp;
 }
@@ -751,6 +823,9 @@ export function describe(s: GameState) {
     `Cash ${fmt(s.cash)}, runway ${runway === Infinity ? "profitable" : `${runway.toFixed(1)} quarters`}. Valuation ${fmt(valuation(s))}.`,
     `CEO secret offshore account: ${fmt(s.offshore)}. CEO reputation ${s.reputation}/100.`,
     `Office: ${office(s).name}${s.floors ? " (+ extra floor)" : ""}, ${capacity(s) === Infinity ? "no desks" : `${capacity(s)} desks`}${hotDeskers(s) ? `, ${hotDeskers(s)} people have no desk and are hot-desking on beanbags` : ""}.`,
+    describeOrg(s),
+    s.cfo && s.employees.some((e) => e.name === s.cfo) ? `${s.cfo} is the CFO the board appointed over the CEO's objection; he reports every outgoing payment to the board.` : "",
+    (s.payFrozenUntil ?? 0) > s.quarter ? `The board froze the CEO's salary until Q${s.payFrozenUntil}.` : "",
     s.upgrades.length ? `Office perks the CEO bought: ${ownedUpgrades(s).map((u) => (isOldNews(s, u.id) ? `${u.gossip} (old news, nobody cares anymore)` : `${u.gossip} (new)`)).join(", ")}.` : "No office perks.",
     s.promises.length ? `Open CEO promises: ${s.promises.map((p) => `"${p.text}" due Q${p.dueQuarter}`).join("; ")}.` : "No open promises.",
     `Systems: ${SYSTEM_IDS.map((k) => {
@@ -763,7 +838,7 @@ export function describe(s: GameState) {
     s.alumni.length ? `Former employees: ${s.alumni.slice(0, 5).map((a) => `${a.name} (${a.reason} Q${a.leftQuarter}${a.atCompetitor ? ", now at a competitor" : ""}${a.grudge > 60 ? ", holds a grudge" : ""})`).join("; ")}.` : "",
     `Roster: ${s.employees
       .slice(0, 16)
-      .map((e) => `${e.name} (${e.role}, mood ${employeeMood(s, e)}, ${fmt(payOf(e))}/q, ${e.quirk})`)
+      .map((e) => `${e.name} (${titleOf(e)}, mood ${employeeMood(s, e)}, ${fmt(payOf(e))}/q, ${e.quirk})`)
       .join("; ")}${s.employees.length > 16 ? ` and ${s.employees.length - 16} more` : ""}.`,
     `Recurring characters in the CEO's life: ${s.cast.map((c) => `${c.name} (${c.role}${c.history.length ? `; remembers: ${c.history.slice(-2).join(" / ")}` : ""})`).join("; ")}.`,
     s.threads.some((t) => t.open) ? `Ongoing storylines: ${s.threads.filter((t) => t.open).map((t) => `"${t.title}" so far: ${t.episodes.join(" → ")}`).join(" || ")}.` : "",
@@ -822,7 +897,8 @@ export function endQuarter(s: GameState): QuarterReport {
   const perkMorale = perks.reduce((a, u) => a + perkEffect(s, u).morale, 0) + office(s).moralePerQ;
   const perkHype = perks.reduce((a, u) => a + perkEffect(s, u).hype, 0) + office(s).hypePerQ;
   s.morale = clamp(s.morale - 3 + perkMorale);
-  s.hype = clamp(s.hype - 5 + (rev > cost ? 4 : 0) + perkHype);
+  s.hype = clamp(s.hype - 5 + (rev > cost ? 4 : 0) + perkHype + cSuiteHype(s));
+  lines.push(...stepOrg(s, (e) => employeeMood(s, e)));
   s.suspicion = clamp(s.suspicion - 4);
   if (perkMorale || perkHype) lines.push(`Office & perks: morale ${perkMorale >= 0 ? "+" : ""}${perkMorale}, hype ${perkHype >= 0 ? "+" : ""}${perkHype}.`);
 
@@ -905,6 +981,10 @@ export function endQuarter(s: GameState): QuarterReport {
 
   s.quarter++;
   s.actionsLeft = ACTIONS_PER_QUARTER;
+  if (ceoSpan(s) > CEO_SPAN) {
+    s.actionsLeft--;
+    lines.push(`${ceoSpan(s)} people report directly to you. Your calendar is wall-to-wall 1:1s: one decision fewer next quarter.`);
+  }
   return { lines, gone };
 }
 
@@ -1033,7 +1113,8 @@ function stepSystems(s: GameState, lines: string[]) {
     }
     if (owner) {
       const juggling = ownedBy(s, owner.id).length;
-      const care = owner.contractor ? 15 : Math.max(2, 4 + Math.round((employeeMood(s, owner) - 30) / 6));
+      let care = owner.contractor ? 15 : Math.max(2, 4 + Math.round((employeeMood(s, owner) - 30) / 6));
+      if (reportsOf(s, owner.id).length >= 3) care = Math.round(care / 2); // the Peter principle: now in meetings all day
       delta += Math.round(care / Math.max(1, juggling * 0.75));
       sys.health = clamp(sys.health + delta);
     } else {

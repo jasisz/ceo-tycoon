@@ -38,6 +38,17 @@ downsides stay).
   it with a board seat, a 2x liquidation preference or a personal guarantee. The LLM plays the fund:
   accept, counter or pass. The engine enforces what you signed — the preference eats your IPO, the
   guarantee eats your savings, the board member sticks around.
+- **Org chart**: decide who reports to whom and hand out titles (Team Lead → Chief … Officer), then
+  announce the reorg and watch the politics. More than 6 direct reports eats one of your decisions
+  every quarter; managers' moods leak into their teams; too many layers cost revenue in meetings;
+  promote your best engineer to manager and nobody maintains infra anymore. Skip-level 1:1s get noticed.
+- **Hiring**: the LLM sends three candidates with CVs, red flags and whatever they've heard about you.
+  Pick one, set salary and a sweetener, make your case. They can say no.
+- **Herr Brunner**: money moves to Zug through a scheme of your choice (consulting invoice, Alpine
+  "retreat", Cyprus licensing, crypto "treasury"), and he wants a cover story for the auditors.
+- **The board** meets every 4 quarters with a motion of its own: appoint a CFO who watches every
+  payment, freeze your salary, cut staff, sell the perks, or a vote of no confidence. You argue, they
+  vote, the engine enacts it. Every board seat you traded for money is a vote against you.
 - **Media**: podcasts, a journalist who asks about whatever she's heard (Zug included), LinkedIn
   posts, paid features. The team reads it too.
 

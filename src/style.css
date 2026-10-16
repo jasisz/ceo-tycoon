@@ -141,3 +141,11 @@ main { flex: 1; display: flex; min-height: 0; }
 .terms { display: grid; gap: 8px; margin: 10px 0 4px; }
 .terms label { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-weight: 600; }
 .terms select { flex: 1; max-width: 70%; font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg, #fff); color: inherit; }
+
+.org-tree { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; max-height: 52vh; overflow: auto; }
+.org-row { display: grid; grid-template-columns: 1fr minmax(120px, 170px) minmax(140px, 230px); gap: 6px; align-items: center; padding: 4px 6px; border-left: 2px solid var(--line); font-size: 13px; }
+.org-row.org-ceo { display: block; border-left: none; }
+.org-row select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; min-width: 0; }
+.org-name .chip { font-size: 10px; margin-left: 4px; }
+.sub.bad { color: #c0392b; }
+@media (max-width: 640px) { .org-row { grid-template-columns: 1fr; } }

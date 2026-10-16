@@ -33,6 +33,10 @@ import {
   office,
   buyUpgrade,
   closeRound,
+  hireCandidate,
+  HIRE_PERKS,
+  RECRUIT_FEE,
+  type HirePerk,
   pick,
   SWEETENERS,
   type Sweetener,
@@ -68,7 +72,9 @@ import {
   type Genesis,
   payZug,
   zugSuspicion,
-  ZUG_AMOUNT,
+  ZUG_SCHEMES,
+  zugSchemeSuspicion,
+  type ZugScheme,
   recordEpisode,
   MAX_EPISODES,
   MAX_OPEN_THREADS,
@@ -78,6 +84,8 @@ import {
   type Effects,
   type GameState,
 } from "./game/state";
+import { applyReorg, CEO_SPAN, ceoSpan, HEALTHY_DEPTH, MANAGER_SPAN, managerOf, orgDepth, reportsOf, TITLE_IDS, TITLES, titleOf, wouldCycle, type OrgChange, type Title } from "./game/org";
+import { BOARD_EVERY, boardMembers, enactMotion, pickMotion, rememberVote, tally } from "./game/board";
 import { FLOOR_COST, FLOOR_DESKS, FLOOR_RENT, NOVELTY_QUARTERS, OFFICES, UPGRADES, type OfficeTier, type UpgradeSpec } from "./game/office";
 
 // ---------- API ----------
@@ -90,6 +98,7 @@ interface Judgement {
   people: PersonEffect[];
   company: IdentityChange;
   kpis: { quote: string; metric: "revenue" | "headcount" | "valuation" | "hype"; multiplier: number; quarters: number }[];
+  votes?: { name: string; vote: "yes" | "no"; line: string }[];
   deal?: { verdict: "accept" | "counter" | "pass"; premoney: number; amount: number; line: string };
   narration: string;
   reactions: { speaker: string; line: string }[];
@@ -218,11 +227,21 @@ const ACTIONS: Action[] = [
     id: "hire",
     group: "people",
     icon: "🧑‍💻",
-    label: "Hire +2",
-    hint: "Recruiting fees $40k. Beyond your desk count, people hot-desk (morale penalty).",
+    label: "Agency +2",
+    hint: "An agency sends two people you never meet. Recruiting fees $40k. Beyond your desk count, people hot-desk (morale penalty).",
     enabled: () => s.employees.length < maxHeadcount(s),
     sub: () => (s.employees.length >= maxHeadcount(s) ? "no room" : s.employees.length + 2 > capacity(s) ? "$40k · no desks!" : "$40k"),
     run: hireTwo,
+  },
+  {
+    id: "recruit",
+    group: "people",
+    icon: "🤝",
+    label: "Interview",
+    hint: `Meet three candidates, make one an offer. ${fmt(RECRUIT_FEE)} recruiter fee whether they sign or not. They've read your Glassdoor.`,
+    enabled: () => s.employees.length < maxHeadcount(s) && s.cash > RECRUIT_FEE,
+    sub: () => (s.employees.length >= maxHeadcount(s) ? "no room" : `${fmt(RECRUIT_FEE)} fee`),
+    run: recruit,
   },
   {
     id: "layoff",
@@ -266,6 +285,17 @@ const ACTIONS: Action[] = [
     run: team,
   },
   {
+    id: "org",
+    group: "people",
+    icon: "🏛️",
+    label: "Org chart",
+    hint: `Who reports to whom, and what you call them. More than ${CEO_SPAN} direct reports eats one of your decisions every quarter. Announcing a reorg costs a decision.`,
+    free: true,
+    enabled: () => s.employees.length > 0,
+    sub: () => `${ceoSpan(s)} report to you${ceoSpan(s) > CEO_SPAN ? " ⚠️" : ""}`,
+    run: orgChart,
+  },
+  {
     id: "alumni",
     group: "people",
     icon: "📇",
@@ -284,10 +314,10 @@ const ACTIONS: Action[] = [
     id: "offshore",
     group: "shady",
     icon: "🏝️",
-    label: "'Consulting fee' to Zug",
-    hint: "$250k from the company to your offshore account (Herr Brunner keeps 10%). Each transfer is more suspicious than the last.",
-    enabled: () => s.cash > ZUG_AMOUNT,
-    sub: () => `$250k · suspicion +${zugSuspicion(s)} · stash ${fmt(s.offshore)}`,
+    label: "Meet Herr Brunner",
+    hint: "Move company money to your account in Zug. Pick a scheme, sell him the cover story. Each transfer is more suspicious than the last.",
+    enabled: () => s.cash > ZUG_SCHEMES.retreat.amount,
+    sub: () => `suspicion +${zugSuspicion(s)}ish · stash ${fmt(s.offshore)}`,
     run: offshore,
   },
 ];
@@ -697,6 +727,107 @@ async function media() {
   });
 }
 
+interface Candidate {
+  name: string;
+  role: string;
+  headline: string;
+  strength: string;
+  red_flag: string;
+  quirk: string;
+  heard: string;
+  ask: number;
+  mock?: boolean;
+}
+
+const OFFERS = [
+  { label: "Lowball", mult: 0.8 },
+  { label: "Their ask", mult: 1 },
+  { label: "Generous", mult: 1.2 },
+];
+
+async function recruit() {
+  const pool = await withBusy(async () => {
+    loading("Your recruiter is forwarding LinkedIn profiles...");
+    s.cash -= RECRUIT_FEE;
+    s.actionsLeft--;
+    return api<{ candidates: Candidate[]; mock?: boolean }>("/api/candidates", { context: describe(s), roles: ROLES });
+  });
+  if (!pool?.candidates.length) return;
+  const cs = pool.candidates;
+  const pickC = await modal(
+    `<h2>🤝 Candidates</h2><p class="sub">${fmt(RECRUIT_FEE)} paid to the recruiter. Pick one to make an offer to, or let them all go.</p>
+    <div class="choices">${cs
+      .map(
+        (c, i) => `<button class="choice" data-v="${i}">
+        <b>${esc(c.name)} <span class="price">asks ${fmt(c.ask)}/q</span></b>
+        <small>${esc(c.role)} · ${esc(c.headline)}</small>
+        <small>✅ ${esc(c.strength)}</small>
+        <small>🚩 ${esc(c.red_flag)}</small>
+        <small>👂 Heard: ${esc(c.heard)}</small>
+      </button>`,
+      )
+      .join("")}</div>`,
+    [{ label: "Pass on all of them", value: "none" }],
+    { wide: true },
+  );
+  const c = cs[Number(pickC.value)];
+  if (!c) return log(s, "Interviewed three candidates and hired none of them. The recruiter still invoiced.");
+  const select = (id: string, opts: string[], def = 0) =>
+    `<select id="${id}">${opts.map((o, i) => `<option value="${i}" ${i === def ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
+  const promise = modal(
+    `<h2>📝 Offer for ${esc(c.name)}</h2>
+    <p class="sub">${esc(c.role)} · asks ${fmt(c.ask)}/q · 🚩 ${esc(c.red_flag)}</p>
+    <div class="terms">
+      <label>Salary ${select("o-pay", OFFERS.map((o) => `${o.label}: ${fmt(Math.round((c.ask * o.mult) / 1000) * 1000)}/q`), 1)}</label>
+      <label>Sweetener ${select("o-perk", Object.values(HIRE_PERKS).map((p) => p.label))}</label>
+    </div>
+    <p class="sub" id="o-sum"></p>
+    <p>Why should they join?</p>`,
+    [
+      { label: "Withdraw", value: "cancel" },
+      { label: "Make the offer", value: "go", primary: true },
+    ],
+    { input: `${c.name.split(" ")[0]}, I'll be straight with you about where we are...` },
+  );
+  const readOffer = () => {
+    const o = OFFERS[Number(($("#o-pay") as HTMLSelectElement).value)];
+    const perk = Object.keys(HIRE_PERKS)[Number(($("#o-perk") as HTMLSelectElement).value)] as HirePerk;
+    return { label: o.label, salary: Math.round((c.ask * o.mult) / 1000) * 1000, perk };
+  };
+  const sum = () => {
+    const o = readOffer();
+    $("#o-sum").textContent = HIRE_PERKS[o.perk].blurb;
+  };
+  document.querySelectorAll(".terms select").forEach((el) => el.addEventListener("change", sum));
+  sum();
+  let offer = readOffer();
+  const r = await promise;
+  if (r.value !== "go") return log(s, `Withdrew the offer to ${c.name}. They'll tell people.`);
+  offer = { ...offer, ...readOffer() };
+  await withBusy(async () => {
+    loading(`${c.name.split(" ")[0]} is checking your Glassdoor one more time...`);
+    const words = `${offer.label.toLowerCase()}: ${fmt(offer.salary)} per quarter (they asked for ${fmt(c.ask)}), plus ${HIRE_PERKS[offer.perk].label.toLowerCase()}`;
+    const j = await judged("recruit", r.text, {
+      offer: words,
+      npc: { name: c.name, role: c.role, quirk: `${c.quirk}. CV: ${c.headline}. Red flag: ${c.red_flag}. Has heard: ${c.heard}`, mood: 50 },
+    });
+    applyEffects(s, { morale: clamp(j.deltas.morale, -3, 3), hype: clamp(j.deltas.hype, -3, 3), suspicion: j.deltas.suspicion });
+    let extra: string;
+    if (j.accepted) {
+      const e = hireCandidate(s, c, offer.salary, offer.perk, j.memory);
+      addPromises(j, e);
+      music.play("hire");
+      log(s, `Hired ${c.name} (${c.role}) at ${fmt(offer.salary)}/q. ${j.narration}`);
+      extra = `<p class="big good">🤝 ${esc(c.name)} signed. ${offer.perk === "title" ? "Team Lead from day one." : ""}</p>`;
+    } else {
+      log(s, `${c.name} turned down the offer. ${j.narration}`);
+      extra = `<p class="big bad">📵 ${esc(c.name)} declined. They're telling the next company about your offer.</p>`;
+    }
+    render();
+    await modal(judgementHtml(`Offer to ${c.name}`, j, extra), [{ label: "OK", value: "ok" }]);
+  });
+}
+
 async function layoffs() {
   const n = Math.max(1, Math.round(s.employees.length * 0.1));
   const gone = removeEmployees(s, n, "laid off");
@@ -774,13 +905,48 @@ async function pivot() {
   });
 }
 
-function offshore() {
-  music.play("zug");
-  const susp = payZug(s);
-  s.actionsLeft--;
-  log(s, `Paid a $250k "strategic consulting" invoice to a company in Zug (Herr Brunner kept 10%). Suspicion +${susp}.`);
-  scene.ceoBubble("Strategic consulting. Very strategic.");
-  scene.moneyFly();
+async function offshore() {
+  const r = await modal(
+    `<p class="kicker">Zug, Switzerland</p><h2>🏦 Herr Brunner will see you now</h2>
+    <p class="sub">Wood panelling. A clock that costs more than your Series A. He does not offer coffee. Stash so far: ${fmt(s.offshore)}.</p>
+    <div class="choices">${(Object.keys(ZUG_SCHEMES) as ZugScheme[])
+      .map((k) => {
+        const z = ZUG_SCHEMES[k];
+        return `<button class="choice" data-v="${k}" ${s.cash <= z.amount ? "disabled" : ""}>
+        <b>${z.emoji} ${esc(z.label)} <span class="price">${fmt(z.amount)}</span></b>
+        <small>${esc(z.blurb)}</small>
+        <span>${chip(`You get ${fmt(z.amount * (1 - z.fee))}`, "good")}${chip(`Brunner ${Math.round(z.fee * 100)}%`, "neutral")}${chip(`Suspicion +${zugSchemeSuspicion(s, k)}`, "bad")}${s.cash <= z.amount ? chip("Can't afford", "neutral") : ""}</span>
+      </button>`;
+      })
+      .join("")}</div>`,
+    [{ label: "Leave quietly", value: "cancel" }],
+    { wide: true },
+  );
+  const k = r.value as ZugScheme;
+  const z = ZUG_SCHEMES[k];
+  if (!z) return;
+  const story = await modal(
+    `<h2>${z.emoji} ${esc(z.label)}</h2><p class="quote"><b>Herr Brunner:</b> “${esc(z.brunner)} And when the auditors ask what this was for?”</p>`,
+    [
+      { label: "Leave quietly", value: "cancel" },
+      { label: "Explain", value: "go", primary: true },
+    ],
+    { input: "It's a standard engagement. There's a deliverable. A deck, mostly..." },
+  );
+  if (story.value !== "go") return;
+  await withBusy(async () => {
+    loading("Herr Brunner is polishing his glasses...");
+    const j = await judged("brunner", story.text, { eventTitle: `${z.label}: ${fmt(z.amount)} from company cash to the CEO's account, Brunner keeps ${Math.round(z.fee * 100)}%. This is transfer #${s.zugTransfers + 1} from ${s.company}.` });
+    music.play("zug");
+    const cover = clamp(j.deltas.suspicion, -5, 8);
+    const susp = payZug(s, k, cover);
+    s.actionsLeft--;
+    log(s, `${z.label} (${fmt(z.amount)}) to Zug. Suspicion +${susp}. ${j.narration}`);
+    scene.ceoBubble("Strategic. Very strategic.");
+    scene.moneyFly();
+    const extra = `<p class="big good">🏝️ ${fmt(z.amount * (1 - z.fee))} landed in Zug.</p><p class="sub">Cover story: ${cover < 0 ? "boring enough to work" : cover > 0 ? "memorable, which is bad" : "forgettable"} (${cover > 0 ? "+" : ""}${cover}).</p>`;
+    await modal(judgementHtml("Zug", j, extra, { suspicion: susp }), [{ label: "Fly home", value: "ok" }]);
+  });
 }
 
 async function doIpo() {
@@ -892,11 +1058,13 @@ async function talkTo(id: number) {
   const owns = ownedBy(s, e.id);
   const canFire = s.actionsLeft > 0;
   const memories = e.history.slice(-3).reverse();
+  const boss = managerOf(s, e);
   const r = await modal(
     `<h2>${esc(e.name)}${e.contractor ? " <small>(contractor)</small>" : ""}</h2>
-    <p class="sub">${esc(e.role)} · mood ${mood}/100 · ${fmt(payOf(e))}/q${owns.length ? ` · <b>only one who understands ${owns.map((k) => `${SYSTEMS[k].emoji} ${SYSTEMS[k].name}`).join(", ")}</b>` : ""}</p>
+    <p class="sub">${esc(titleOf(e))}${boss ? ` · reports to ${esc(boss.name)}` : ""} · mood ${mood}/100 · ${fmt(payOf(e))}/q${owns.length ? ` · <b>only one who understands ${owns.map((k) => `${SYSTEMS[k].emoji} ${SYSTEMS[k].name}`).join(", ")}</b>` : ""}</p>
     <p><i>${esc(e.name.split(" ")[0])} ${esc(e.quirk)}.</i>${e.knowsZug ? " <i>Looks at you a little too long whenever someone says “Switzerland”.</i>" : ""}</p>
     ${memories.length ? `<div class="memories"><b>They remember:</b>${memories.map((m) => `<p>• ${esc(m)}</p>`).join("")}</div>` : ""}
+    ${boss && !already ? `<p class="sub">⚠️ Skip-level: ${esc(boss.name.split(" ")[0])} will hear you went around them.</p>` : ""}
     ${already ? "<p>You already had a 1:1 this quarter. They're avoiding eye contact.</p>" : ""}`,
     [
       { label: canFire ? "Let them go (1 decision)" : "Let them go (no decisions left)", value: canFire ? "fire" : "cancel" },
@@ -917,6 +1085,10 @@ async function talkTo(id: number) {
     e.moodOffset = clamp(e.moodOffset + d.morale * 2, -50, 50);
     e.talkedQuarter = s.quarter;
     if (j.memory) remember(e, s.quarter, j.memory);
+    if (boss) {
+      boss.moodOffset = clamp(boss.moodOffset - 4, -50, 50);
+      remember(boss, s.quarter, `The CEO went around me for a 1:1 with ${e.name.split(" ")[0]}.`);
+    }
     addPromises(j, e);
     log(s, `1:1 with ${e.name}: ${j.narration}`);
     showReactions(j, e.id);
@@ -965,7 +1137,7 @@ async function team() {
     ].join("");
     return `<button class="choice person" data-v="talk:${e.id}">
       <b>${moodFace(m)} ${esc(e.name)} <span class="price">${fmt(payOf(e))}/q</span></b>
-      <small>${esc(e.role)} · mood ${m} · ${esc(e.quirk)}</small>
+      <small>${esc(titleOf(e))}${managerOf(s, e) ? ` → ${esc(managerOf(s, e)!.name.split(" ")[0])}` : ""} · mood ${m} · ${esc(e.quirk)}</small>
       ${tags ? `<span>${tags}</span>` : ""}
     </button>`;
   });
@@ -984,6 +1156,117 @@ async function team() {
   const id = Number(r.value.slice(5));
   scene.focus(id);
   await talkTo(id);
+}
+
+// ---------- org chart ----------
+
+async function orgChart() {
+  const plan = new Map<number, OrgChange>(s.employees.map((e) => [e.id, { id: e.id, managerId: managerOf(s, e)?.id ?? null, title: e.title ?? null }]));
+  let warn = "";
+  const promise = modal(
+    `<h2>🏛️ Org chart</h2>
+    <p class="sub">Set who reports to whom and hand out titles. Nothing changes until you announce the reorg (1 decision). Titles cost money; taking one away costs more than money.</p>
+    <div id="org-body"></div>`,
+    [
+      { label: "Close", value: "close" },
+      { label: s.actionsLeft > 0 ? "Announce reorg…" : "Announce reorg (no decisions left)", value: s.actionsLeft > 0 ? "go" : "close" },
+    ],
+    { wide: true },
+  );
+  const draw = () => {
+    // preview on a copy so the real company only changes on announce
+    const sim = structuredClone(s);
+    for (const e of sim.employees) {
+      const c = plan.get(e.id)!;
+      e.managerId = c.managerId;
+      e.title = c.title ?? undefined;
+    }
+    const row = (e: Employee, depth: number): string => {
+      const c = plan.get(e.id)!;
+      const team = reportsOf(sim, e.id);
+      const m = employeeMood(s, s.employees.find((x) => x.id === e.id)!);
+      const opts = [`<option value="ceo">🕶️ You</option>`, ...sim.employees.filter((x) => x.id !== e.id).map((x) => `<option value="${x.id}" ${c.managerId === x.id ? "selected" : ""}>${esc(x.name)}</option>`)].join("");
+      const titles = [`<option value="">${esc(e.role)}</option>`, ...TITLE_IDS.map((k) => `<option value="${k}" ${c.title === k ? "selected" : ""}>${esc(titleOf({ ...e, title: k }))} (+${fmt(TITLES[k].premium)}/q)</option>`)].join("");
+      const flags = [
+        team.length > MANAGER_SPAN ? chip(`${team.length} reports — drowning`, "bad") : team.length ? chip(`${team.length} reports`, "neutral") : "",
+        c.title && c.title !== "lead" && !team.length ? chip("title, no team", "bad") : "",
+        ownedBy(s, e.id).length && team.length >= 3 ? chip("too busy for " + ownedBy(s, e.id).map((k) => SYSTEMS[k].emoji).join(""), "bad") : "",
+      ].join("");
+      return `<div class="org-row" style="margin-left:${depth * 18}px">
+          <span class="org-name">${moodFace(m)} <b>${esc(e.name)}</b> ${flags}</span>
+          <select data-mgr="${e.id}">${opts}</select>
+          <select data-title="${e.id}">${titles}</select>
+        </div>${team.map((r) => row(r, depth + 1)).join("")}`;
+    };
+    const top = reportsOf(sim, null);
+    const span = top.length;
+    const depth = orgDepth(sim);
+    const cost = [...plan.values()].reduce((a, c) => {
+      const before = s.employees.find((x) => x.id === c.id)!.title;
+      return a + (c.title ? TITLES[c.title].premium : 0) - (before ? TITLES[before].premium : 0);
+    }, 0);
+    const changed = s.employees.filter((e) => {
+      const c = plan.get(e.id)!;
+      return (managerOf(s, e)?.id ?? null) !== c.managerId || (e.title ?? null) !== c.title;
+    }).length;
+    $("#org-body").innerHTML = `
+      <div class="chips">
+        ${chip(`${span} report to you`, span > CEO_SPAN ? "bad" : "good")}
+        ${chip(`${depth} layer${depth === 1 ? "" : "s"}`, depth > HEALTHY_DEPTH ? "bad" : "neutral")}
+        ${cost ? chip(`Payroll ${cost > 0 ? "+" : ""}${fmt(cost)}/q`, cost > 0 ? "bad" : "good") : ""}
+        ${changed ? chip(`${changed} change${changed === 1 ? "" : "s"}`, "neutral") : ""}
+      </div>
+      ${span > CEO_SPAN ? `<p class="sub">⚠️ More than ${CEO_SPAN} direct reports: your calendar eats one decision every quarter.</p>` : ""}
+      ${depth > HEALTHY_DEPTH ? `<p class="sub">⚠️ ${depth} layers: revenue −${(depth - HEALTHY_DEPTH) * 4}% to alignment meetings.</p>` : ""}
+      ${warn ? `<p class="sub bad">${esc(warn)}</p>` : ""}
+      <div class="org-tree"><div class="org-row org-ceo"><b>🕶️ You (CEO)</b></div>${top.map((e) => row(e, 1)).join("")}</div>`;
+    warn = "";
+    document.querySelectorAll<HTMLSelectElement>("#org-body select[data-mgr]").forEach((el) =>
+      el.addEventListener("change", () => {
+        const id = Number(el.dataset.mgr);
+        const to = el.value === "ceo" ? null : Number(el.value);
+        const pm = new Map([...plan.values()].map((c) => [c.id, c.managerId]));
+        if (wouldCycle(s, id, to, pm)) warn = "That would make someone their own boss. Even for a startup, no.";
+        else plan.get(id)!.managerId = to;
+        draw();
+      }),
+    );
+    document.querySelectorAll<HTMLSelectElement>("#org-body select[data-title]").forEach((el) =>
+      el.addEventListener("change", () => {
+        plan.get(Number(el.dataset.title))!.title = (el.value || null) as Title | null;
+        draw();
+      }),
+    );
+  };
+  draw();
+  const r = await promise;
+  if (r.value !== "go") return;
+  const changes = [...plan.values()].filter((c) => {
+    const e = s.employees.find((x) => x.id === c.id)!;
+    return (managerOf(s, e)?.id ?? null) !== c.managerId || (e.title ?? null) !== c.title;
+  });
+  if (!changes.length) return;
+  const a = await modal(
+    `<h2>📣 Announce the reorg</h2><p class="sub">${changes.length} change${changes.length === 1 ? "" : "s"}. Everyone will read it twice, looking for their own name.</p>`,
+    [
+      { label: "Cancel", value: "cancel" },
+      { label: "Send to all-staff", value: "go", primary: true },
+    ],
+    { input: "Team, to better align with our next phase of growth, I'm excited to share some changes to our structure..." },
+  );
+  if (a.value !== "go") return;
+  await withBusy(async () => {
+    loading("Everyone is refreshing the org chart in Notion...");
+    const res = applyReorg(s, changes, s.quarter, remember);
+    const j = await judged("reorg", a.text, { reorg: res.lines });
+    applyEffects(s, j.deltas);
+    addPromises(j);
+    s.actionsLeft--;
+    log(s, `Reorg (${res.lines.length} changes): ${j.narration}`);
+    showReactions(j);
+    const list = `<div class="memories"><b>What changed:</b>${res.lines.map((l) => `<p>• ${esc(l)}</p>`).join("")}</div>`;
+    await modal(judgementHtml("Reorg announced", j, list), [{ label: "Back to work", value: "ok" }]);
+  });
 }
 
 // ---------- alumni ----------
@@ -1073,6 +1356,53 @@ async function boardMeeting() {
   await modal(judgementHtml("Board meeting", j), [{ label: "Back to work", value: "ok" }]);
 }
 
+async function boardVote() {
+  s.lastBoardVote = s.quarter;
+  const members = boardMembers(s);
+  const m = pickMotion(s);
+  music.play("board");
+  const r = await modal(
+    `<p class="kicker">Q${s.quarter} board meeting · ${members.length + 1} votes, the chair breaks ties</p><h2>🗳️ Motion: ${esc(m.title)}</h2>
+    <p>${esc(m.text)}</p>
+    <div class="memories"><b>Around the table:</b>${members.map((c) => `<p>• <b>${esc(c.name)}</b> — ${esc(c.role)}${c.history.length ? `<br><span class="sub">${esc(c.history[c.history.length - 1])}</span>` : ""}</p>`).join("")}<p>• <b>You</b> — voting no</p></div>
+    <p class="sub">Argue against it, or vote with them and look like a team player.</p>`,
+    [
+      { label: "Vote with the board", value: "concede" },
+      { label: "Argue against", value: "go", primary: true },
+    ],
+    { input: "With respect, I think this motion misreads where we are. Here's what I propose instead..." },
+  );
+  let extra: string;
+  let j: Judgement | null = null;
+  if (r.value === "concede") {
+    const did = enactMotion(s, m);
+    rememberVote(s, m, true, members.map((c) => ({ name: c.name, vote: "yes" })));
+    applyEffects(s, { suspicion: -3 });
+    log(s, `Board meeting: you voted for "${m.title}" yourself. ${did}`);
+    extra = `<p class="big">🤝 Unanimous.</p><p>${esc(did)}</p>`;
+  } else {
+    loading("The board is voting...");
+    j = await judged("boardvote", r.text, { board: { motion: `${m.title}: ${m.text}`, members: members.map((c) => c.name) } });
+    applyEffects(s, j.deltas);
+    addPromises(j);
+    const t = tally(s, j.votes ?? []);
+    rememberVote(s, m, t.passed, t.cast);
+    const lines = t.cast
+      .map((c) => {
+        const said = j!.votes?.find((v) => v.name.toLowerCase().includes(c.name.split(" ")[0].toLowerCase()))?.line;
+        return `<p class="quote"><b>${c.vote === "yes" ? "✋ Yes" : "🙅 No"} — ${esc(c.name)}:</b> ${said ? `“${esc(said)}”` : ""}</p>`;
+      })
+      .join("");
+    const did = t.passed ? enactMotion(s, m) : "";
+    log(s, `Board vote on "${m.title}": ${t.passed ? "passed" : "failed"} ${t.yes}-${t.no}. ${did}`);
+    extra = `${lines}<p class="big ${t.passed ? "bad" : "good"}">${t.passed ? `🔨 Passed ${t.yes}–${t.no}.` : `🛡️ Defeated ${t.no}–${t.yes}.`}</p>${did ? `<p>${esc(did)}</p>` : ""}`;
+    j.reactions = [];
+  }
+  render();
+  const html = j ? judgementHtml(`Board vote: ${m.title}`, j, extra) : `<h2>Board vote: ${esc(m.title)}</h2>${extra}`;
+  await modal(html, [{ label: s.over ? "Pack your desk" : "Back to work", value: "ok" }]);
+}
+
 async function ceoPanel() {
   if (busy) return;
   const r = await modal(
@@ -1137,6 +1467,8 @@ function prefetchEvent() {
 async function startQuarter() {
   await withBusy(async () => {
     if (s.boardDemands.length) await boardMeeting();
+    if (s.quarter % BOARD_EVERY === 0 && s.lastBoardVote < s.quarter) await boardVote();
+    if (s.over) return;
     loading(`Q${s.quarter}: something is happening at ${s.company}...`);
     const ev = await (pendingEvent ?? requestEvent());
     pendingEvent = null;
@@ -1182,6 +1514,7 @@ async function startQuarter() {
       await modal(judgementHtml(ev.title, j, peopleHtml(touched), { ...j.deltas, ...j.consequences }), [{ label: "OK", value: "ok" }]);
     }
   });
+  if (s.over) return gameOver();
   gossip();
 }
 

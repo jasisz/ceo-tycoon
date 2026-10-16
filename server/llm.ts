@@ -86,7 +86,7 @@ async function withFallback<T>(llm: () => Promise<T>, mock: () => T): Promise<T 
 
 // ---------- judge: free-text CEO actions ----------
 
-export type Scene = "allhands" | "investors" | "employee" | "event" | "board" | "rehire" | "pivot" | "media";
+export type Scene = "allhands" | "investors" | "employee" | "event" | "board" | "rehire" | "pivot" | "media" | "reorg" | "recruit" | "brunner" | "boardvote";
 
 export interface JudgeRequest {
   scene: Scene;
@@ -100,6 +100,12 @@ export interface JudgeRequest {
   terms?: PitchTerms;
   /** For "media": who is interviewing and what they asked. */
   outlet?: { name: string; brief: string; question: string };
+  /** For "reorg": what actually changed in the org chart (the engine already applied it). */
+  reorg?: string[];
+  /** For "recruit": the offer on the table, in words. */
+  offer?: string;
+  /** For "boardvote": the motion and who votes on it. */
+  board?: { motion: string; members: string[] };
 }
 
 export type Sweetener = "none" | "board" | "prefs" | "guarantee";
@@ -220,6 +226,20 @@ const judgeSchema = {
     accepted: { type: "boolean", description: "Only for the 'rehire' scene: does the former employee agree to come back? false for all other scenes." },
     people: peopleSchema,
     company: companySchema,
+    votes: {
+      type: "array",
+      description: "Only for the 'boardvote' scene: one vote per board member listed (yes = the motion passes). Empty for every other scene.",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Exact board member name" },
+          vote: { type: "string", enum: ["yes", "no"] },
+          line: { type: "string", description: "What they say as they vote, in character" },
+        },
+        required: ["name", "vote", "line"],
+        additionalProperties: false,
+      },
+    },
     deal: {
       type: "object",
       description:
@@ -250,7 +270,7 @@ const judgeSchema = {
       },
     },
   },
-  required: ["deltas", "consequences", "narration", "reactions", "promises", "bullshit_score", "memory", "accepted", "people", "company", "deal", "kpis"],
+  required: ["deltas", "consequences", "narration", "reactions", "promises", "bullshit_score", "memory", "accepted", "people", "company", "votes", "deal", "kpis"],
   additionalProperties: false,
 } as const;
 
@@ -265,6 +285,7 @@ const Judgement = z.object({
   accepted: z.boolean(),
   people: PeopleEffects,
   company: Company,
+  votes: z.array(z.object({ name: z.string(), vote: z.enum(["yes", "no"]), line: z.string() })),
   deal: z.object({ verdict: z.enum(["accept", "counter", "pass"]), premoney: z.number(), amount: z.number(), line: z.string() }),
   kpis: z.array(z.object({ quote: z.string(), metric: z.enum(["revenue", "headcount", "valuation", "hype"]), multiplier: z.number(), quarters: z.number() })),
 });
@@ -280,6 +301,14 @@ const SCENE_BRIEF: Record<Scene, string> = {
     "The CEO is announcing a pivot: the company will now do something else, described below in their own words. Fill company.product with a crisp description of the new thing (and company.name if they rename it, or if a rebrand is obviously implied). Investors (hype) love whatever is fashionable; employees (morale) hate whiplash, the further from the old product the worse. Reactions come from employees and one investor.",
   media:
     "The CEO is doing a media appearance (outlet and question below) and answers in their own words. The public, investors (hype) and the team (morale - they read it too) react. Bold claims raise hype but get remembered: put concrete numbers in kpis only if investors would hold them to it, and put anything the team would feel betrayed by in people or morale. A journalist who catches evasion or a lie about money raises suspicion; an answer that admits a real problem with a plan can lower it. Reactions: the host or journalist first, then the internet (a commenter, an employee posting on Slack, an investor).",
+  boardvote:
+    "A scheduled board meeting. The board has put the motion below to a vote; the CEO opposes it and speaks first. Each listed board member then votes, in character and consistent with what they remember about the CEO (see recurring characters): the chair (lead investor) protects the fund's returns, the independent director cares about governance, numbers and suspicion, fund partners who got their seat through a term sheet vote with their fund unless the CEO gives them a reason not to. A strong, honest case with a concrete alternative can flip votes; blaming, vagueness or obvious self-interest (e.g. defending the CEO's own salary) hardens them. Reactions: two or three board members. Put each member's memory of this meeting in people (by exact name). deltas: small; suspicion rises if the CEO dodges money questions.",
+  brunner:
+    "The CEO is in Herr Brunner's wood-panelled office in Zug, arranging to move company money offshore through the scheme in the event line below, and explains the cover story the auditors will hear. Herr Brunner reacts: dry, Swiss, unflappable, faintly contemptuous, never says anything incriminating out loud; he remembers previous transfers (see the recurring characters). Reactions: Brunner first; optionally one more line from whoever at the company will process the paperwork. deltas.suspicion is ONLY the effect of the cover story on top of the scheme's base risk: -5 for a boring, plausible, documented story; 0 for generic; up to +8 for something absurd, traceable, or that drags in real employees by name. morale and hype 0. memory: empty. narration: the meeting in 2-3 sentences.",
+  recruit:
+    "The CEO is trying to hire the candidate described below, with the offer below. The reaction must be the candidate speaking. They weigh the offer against their ask, what they've heard about the company (Glassdoor, alumni, press - see the game state), and how the CEO comes across. Set accepted=true only if they'd realistically sign: a lowball needs a genuinely compelling pitch; overpromising, red-flag corporate speak or dodging what they've heard makes them walk. memory: one sentence they'll remember about how they were hired, from their point of view. Any concrete promise the CEO makes (remote days, a promotion, a bonus) goes into promises. Morale/hype effects are tiny.",
+  reorg:
+    "The CEO is announcing a reorganisation (the actual changes are listed below; the engine has already applied them, pay included). Judge the announcement and the structure itself. Office politics are the point: people who were passed over for someone junior, people demoted, people moved under a manager they dislike (check their history and quirks), people suddenly managing a former peer. Put the strongest individual reactions in people (with memories from their point of view; someone may leave over it). Morale drops for chaotic or unfair reorgs and rises when the structure finally makes sense. Investors (hype) like new C-level titles and 'efficiency', dislike churn at the top. Reactions from the people most affected.",
   rehire:
     "The CEO is trying to convince a former employee to come back as a well-paid contractor, usually because only they understand a system that is now broken. They remember everything in their history and their grudge level. Set accepted=true only if the CEO genuinely addresses what went wrong (an apology that sounds real, paying what was promised, respect). Groveling corporate speak or new promises from a CEO who broke old ones should fail. The reaction is that person speaking.",
   employee:
@@ -329,8 +358,9 @@ function mockJudge(req: JudgeRequest): Judgement {
       req.scene === "employee" && req.npc && /\braise\b/.test(t) && !/\b(next|soon|later|promise)\b/.test(t)
         ? [{ name: req.npc.name, memory: "[mock] The CEO gave me a raise on the spot.", salary_change: 5_000, mood_change: 15, new_quirk: "", leaves: false }]
         : [],
-    accepted: req.scene === "rehire" && ((req.npc?.grudge ?? 50) < 55 || /\b(pay|sorry|apolog)/.test(t)),
+    accepted: (req.scene === "rehire" && ((req.npc?.grudge ?? 50) < 55 || /\b(pay|sorry|apolog)/.test(t))) || (req.scene === "recruit" && !/lowball/i.test(req.offer ?? "") && buzz < 3),
     deal: mockDeal(req),
+    votes: req.scene === "boardvote" ? (req.board?.members ?? []).map((name, i) => ({ name, vote: (i === 0 ? buzz >= 2 : Math.random() < 0.5) ? ("yes" as const) : ("no" as const), line: "[mock] I've seen the numbers." })) : [],
     kpis: inv && /(\d+)\s*x/.test(t) ? [{ quote: req.text.slice(0, 80), metric: "revenue" as const, multiplier: Number(/(\d+)\s*x/.exec(t)![1]), quarters: 4 }] : [],
   };
 }
@@ -360,7 +390,10 @@ export function judge(req: JudgeRequest) {
     : "";
   const o = req.scene === "media" ? req.outlet : undefined;
   const media = o ? `\nOutlet: ${o.name.slice(0, 80)} - ${o.brief.slice(0, 300)}\nThe question: "${o.question.slice(0, 300)}"` : "";
-  const user = `${SCENE_BRIEF[req.scene]}${npc}${ev}${terms}${media}\n\nGame state:\n${req.context}\n\nThe CEO says/does:\n"""${req.text.slice(0, 2000)}"""`;
+  const reorg = req.scene === "reorg" && req.reorg?.length ? `\nChanges in this reorg:\n- ${req.reorg.slice(0, 30).map((l) => String(l).slice(0, 160)).join("\n- ")}` : "";
+  const bv = req.scene === "boardvote" && req.board ? `\nThe motion: ${String(req.board.motion).slice(0, 300)}\nVoting board members: ${req.board.members.slice(0, 6).map(String).join(", ")}` : "";
+  const offer = req.scene === "recruit" && req.offer ? `\nThe offer: ${req.offer.slice(0, 400)}` : "";
+  const user = `${SCENE_BRIEF[req.scene]}${npc}${ev}${terms}${media}${reorg}${offer}${bv}\n\nGame state:\n${req.context}\n\nThe CEO says/does:\n"""${req.text.slice(0, 2000)}"""`;
   return withFallback(
     async () => {
       const j = Judgement.parse(await ask(WORLD, user, judgeSchema));
@@ -371,17 +404,18 @@ export function judge(req: JudgeRequest) {
         consequences: { cash: within(j.consequences.cash, b.cash), headcount: within(j.consequences.headcount, b.headcount) },
         reactions: j.reactions.slice(0, 3),
         promises: j.promises.slice(0, 2),
-        accepted: req.scene === "rehire" && j.accepted,
+        accepted: (req.scene === "rehire" || req.scene === "recruit") && j.accepted,
         // in a 1:1 only the person in the room can be affected (e.g. an on-the-spot raise)
         people:
-          req.scene === "rehire"
+          req.scene === "rehire" || req.scene === "recruit"
             ? []
             : req.scene === "employee"
               ? clampPeople(j.people).filter((p) => p.name.toLowerCase().includes((req.npc?.name ?? "").split(" ")[0].toLowerCase()))
               : clampPeople(j.people),
         kpis: req.scene === "investors" ? j.kpis.slice(0, 3) : [],
         deal: clampDeal(j.deal, tm),
-        company: req.scene === "employee" || req.scene === "rehire" ? EMPTY_COMPANY : clampCompany(j.company),
+        votes: req.scene === "boardvote" ? j.votes.slice(0, 6).map((v) => ({ ...v, line: v.line.slice(0, 200) })) : [],
+        company: req.scene === "employee" || req.scene === "rehire" || req.scene === "recruit" ? EMPTY_COMPANY : clampCompany(j.company),
         memory: j.memory.slice(0, 200),
       };
     },
@@ -695,5 +729,63 @@ export function generateGossip(context: string, names: string[]) {
       headline: "[mock] Local startup still exists, sources confirm",
       gossip: names.slice(0, 6).map((name, i) => ({ name, line: MOCK_LINES[(i + Math.floor(Math.random() * 8)) % MOCK_LINES.length] })),
     }),
+  );
+}
+
+// ---------- recruiting: candidates ----------
+
+const candidatesSchema = {
+  type: "object",
+  properties: {
+    candidates: {
+      type: "array",
+      description: "Exactly 3 job candidates, each a distinct, specific person. Mix: one strong but expensive or difficult, one cheap with an obvious catch, one wildcard tied to the story (e.g. knows a former employee, ex-competitor, the investor's nephew).",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Full name, not one already in the roster, alumni or cast" },
+          role: { type: "string", description: "One of the allowed roles" },
+          headline: { type: "string", description: "One-line CV summary, satirical but believable" },
+          strength: { type: "string", description: "What they'd genuinely be good at" },
+          red_flag: { type: "string", description: "The catch. Concrete." },
+          quirk: { type: "string", description: "Personality quirk, lowercase, starting with a verb (e.g. 'measures everything in story points')" },
+          heard: { type: "string", description: "What they've already heard about this company and its CEO (Glassdoor, alumni, press, rumors). Use the game state." },
+          ask: { type: "integer", description: "Salary they ask for, USD per quarter (typical 35000-70000)" },
+        },
+        required: ["name", "role", "headline", "strength", "red_flag", "quirk", "heard", "ask"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["candidates"],
+  additionalProperties: false,
+} as const;
+
+const Candidates = z.object({
+  candidates: z.array(z.object({ name: z.string(), role: z.string(), headline: z.string(), strength: z.string(), red_flag: z.string(), quirk: z.string(), heard: z.string(), ask: z.number() })),
+});
+export type Candidate = z.infer<typeof Candidates>["candidates"][number];
+
+const MOCK_CANDIDATES: Candidate[] = [
+  { name: "Morgan Vale", role: "Backend Dev", headline: "Ex-FAANG, left after 'a disagreement about the coffee'", strength: "can actually fix prod", red_flag: "wants a title in week one", quirk: "measures everything in story points", heard: "That the CEO talks a lot about family.", ask: 68_000 },
+  { name: "Robin Achterberg", role: "Sales Rep", headline: "Sold timeshares, then crypto, now SaaS", strength: "closes anything", red_flag: "has closed things that did not exist", quirk: "calls everyone 'boss'", heard: "Nothing. Didn't check.", ask: 42_000 },
+  { name: "Frankie Odum", role: "Designer", headline: "Bootcamp grad, 400 Dribbble likes", strength: "cheap and enthusiastic", red_flag: "has never shipped anything", quirk: "redesigns the logo unprompted", heard: "That a former employee posted a long Glassdoor review.", ask: 36_000 },
+];
+
+export function generateCandidates(context: string, roles: string[]) {
+  const user = `Generate this round of job candidates for the company. Allowed roles: ${roles.join(", ")}.\n\nGame state:\n${context}`;
+  return withFallback(
+    async () => {
+      const c = Candidates.parse(await ask(WORLD, user, candidatesSchema, 1800));
+      return {
+        candidates: c.candidates.slice(0, 3).map((x) => ({
+          ...x,
+          role: roles.includes(x.role) ? x.role : roles[0],
+          name: x.name.slice(0, 40),
+          ask: Math.max(30_000, Math.min(95_000, Math.round(x.ask / 1000) * 1000)),
+        })),
+      };
+    },
+    () => ({ candidates: MOCK_CANDIDATES }),
   );
 }
