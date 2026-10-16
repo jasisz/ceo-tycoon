@@ -167,3 +167,27 @@ export function describeOrg(s: GameState) {
     })
     .join("; ")}. ${orgDepth(s)} layers deep.`;
 }
+
+/** A healthy team: 3..MANAGER_SPAN people under a manager who isn't miserable. */
+export function healthyTeams(s: GameState, mood: (e: Employee) => number) {
+  return s.employees.filter((m) => {
+    const n = reportsOf(s, m.id).length;
+    return n >= 3 && n <= MANAGER_SPAN && mood(m) >= 50;
+  });
+}
+
+/** Delegation: few direct reports and every team in good hands frees up one of your decisions. */
+export function delegates(s: GameState, mood: (e: Employee) => number) {
+  const managers = s.employees.filter((m) => reportsOf(s, m.id).length);
+  return ceoSpan(s) <= 4 && managers.length > 0 && healthyTeams(s, mood).length === managers.length;
+}
+
+/** Effective headcount for revenue: a good manager gets 10% more out of people, a miserable one 10% less. */
+export function teamOutput(s: GameState, mood: (e: Employee) => number) {
+  return s.employees.reduce((a, e) => {
+    const m = managerOf(s, e);
+    if (!m) return a + 1;
+    const mm = mood(m);
+    return a + (mm >= 60 ? 1.1 : mm <= 30 ? 0.9 : 1);
+  }, 0);
+}

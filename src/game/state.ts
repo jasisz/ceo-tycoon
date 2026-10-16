@@ -14,7 +14,7 @@ import {
   type OfficeTier,
   type UpgradeSpec,
 } from "./office";
-import { bureaucracyDrag, ceoSpan, cSuiteHype, CEO_SPAN, describeOrg, orphanReports, placeHire, reportsOf, stepOrg, titleOf, type Title } from "./org";
+import { bureaucracyDrag, ceoSpan, delegates, teamOutput, cSuiteHype, CEO_SPAN, describeOrg, orphanReports, placeHire, reportsOf, stepOrg, titleOf, type Title } from "./org";
 
 export const FIRE_TARGET = 5_000_000;
 export const ACTIONS_PER_QUARTER = 2;
@@ -587,15 +587,24 @@ export function systemsMultiplier(s: GameState) {
 
 export function quarterlyRevenue(s: GameState) {
   const mult = 1 + ownedUpgrades(s).reduce((a, u) => a + u.revenue, 0) - (s.office === "remote" ? 0.03 : 0) - bureaucracyDrag(s);
-  return Math.round(s.employees.length * REVENUE_PER_EMPLOYEE * (0.4 + s.morale / 100) * mult * systemsMultiplier(s));
+  return Math.round(teamOutput(s, (e) => employeeMood(s, e)) * REVENUE_PER_EMPLOYEE * (0.4 + s.morale / 100) * mult * systemsMultiplier(s));
 }
 
 export const payOf = (e: Employee) => e.salary * (e.contractor ? CONTRACTOR_RATE : 1);
 
+/** Where the money goes each quarter, line by line. */
+export function costBreakdown(s: GameState) {
+  return {
+    payroll: s.employees.reduce((a, e) => a + payOf(e), 0),
+    rent: rent(s),
+    perks: ownedUpgrades(s).reduce((a, u) => a + upkeepOf(s, u), 0),
+    you: ceoPay(s),
+    saas: Math.max(0, s.employees.length - 1) * LICENSE_COST,
+  };
+}
+
 export function quarterlyCosts(s: GameState) {
-  const n = s.employees.length;
-  const perks = ownedUpgrades(s).reduce((a, u) => a + upkeepOf(s, u), 0);
-  return s.employees.reduce((a, e) => a + payOf(e), 0) + rent(s) + perks + ceoPay(s) + Math.max(0, n - 1) * LICENSE_COST;
+  return Object.values(costBreakdown(s)).reduce((a, b) => a + b, 0);
 }
 
 export function valuation(s: GameState) {
@@ -684,7 +693,12 @@ export function removeEmployee(s: GameState, id: number, reason: Alumnus["reason
     if (reason !== "quit") s.boardDemands.push(`You ${reason === "fired" ? "fired" : "laid off"} ${e.name}, the CFO the board appointed.`);
   }
   const owned = ownedBy(s, e.id);
-  for (const sys of owned) s.systems[sys].owner = null;
+  const boss = e.managerId != null ? s.employees.find((m) => m.id === e.managerId) : undefined;
+  for (const sys of owned) s.systems[sys].owner = boss?.id ?? null;
+  if (boss && owned.length) {
+    remember(boss, s.quarter, `Inherited ${owned.map((k) => SYSTEMS[k].name.toLowerCase()).join(" & ")} when ${e.name.split(" ")[0]} left.`);
+    log(s, `${boss.name} took over ${owned.map((k) => SYSTEMS[k].name.toLowerCase()).join(" & ")} from ${e.name}. A manager who knows the team's work.`);
+  }
   remember(e, s.quarter, reason === "quit" ? "Quit. Couldn't take it anymore." : `Was ${reason} by the CEO.`);
   s.alumni.unshift({
     id: e.id,
@@ -700,7 +714,7 @@ export function removeEmployee(s: GameState, id: number, reason: Alumnus["reason
     grudge: grudgeOf(s, e, reason),
   });
   s.alumni.length = Math.min(s.alumni.length, 24);
-  if (owned.length) log(s, `${e.name} took the only knowledge of ${owned.map((k) => SYSTEMS[k].name.toLowerCase()).join(" & ")} with them.`);
+  if (owned.length && !boss) log(s, `${e.name} took the only knowledge of ${owned.map((k) => SYSTEMS[k].name.toLowerCase()).join(" & ")} with them.`);
   compactDesks(s);
   return e;
 }
@@ -984,6 +998,9 @@ export function endQuarter(s: GameState): QuarterReport {
   if (ceoSpan(s) > CEO_SPAN) {
     s.actionsLeft--;
     lines.push(`${ceoSpan(s)} people report directly to you. Your calendar is wall-to-wall 1:1s: one decision fewer next quarter.`);
+  } else if (delegates(s, (e) => employeeMood(s, e))) {
+    s.actionsLeft++;
+    lines.push(`🧭 Your managers run their teams without you. You get an extra decision next quarter.`);
   }
   return { lines, gone };
 }

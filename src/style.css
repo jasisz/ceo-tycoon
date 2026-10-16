@@ -149,3 +149,31 @@ main { flex: 1; display: flex; min-height: 0; }
 .org-name .chip { font-size: 10px; margin-left: 4px; }
 .sub.bad { color: #c0392b; }
 @media (max-width: 640px) { .org-row { grid-template-columns: 1fr; } }
+
+/* quarterly report */
+.qr { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.qr-card { background: #f6f8fc; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-top: 10px; }
+.qr .qr-card { margin-top: 0; }
+.qr-card h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.pl { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; padding: 2px 0; font-variant-numeric: tabular-nums; }
+.pl.good b { color: var(--good); }
+.pl.total { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 5px; font-weight: 700; }
+.pl.total.bad b { color: var(--bad); }
+.pl.cashline { font-weight: 600; }
+.d { font-size: 11px; font-weight: 700; margin-left: 4px; color: var(--muted); }
+.d.up { color: var(--good); }
+.d.down { color: var(--bad); }
+.vital { display: grid; grid-template-columns: 72px 1fr 26px 44px; gap: 6px; align-items: center; font-size: 13px; padding: 2px 0; }
+.vital b { text-align: right; font-variant-numeric: tabular-nums; }
+.bar.fire i { background: linear-gradient(90deg, #f5a623, #2ecc71); }
+.bar.warn i { background: #f5a623; }
+.qr-sys { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
+.sys { display: grid; grid-template-columns: 90px 1fr 26px 40px; gap: 6px; align-items: center; font-size: 13px; }
+.sys b { text-align: right; }
+.sys small { grid-column: 1 / -1; color: var(--muted); font-size: 11px; margin-top: -3px; }
+.sys.crisis span { color: var(--bad); font-weight: 700; }
+.qr-line { margin: 3px 0; font-size: 13px; padding-left: 8px; border-left: 3px solid var(--line); }
+.qr-line.bad { border-color: var(--bad); }
+.qr-line.good { border-color: var(--good); }
+@media (max-width: 700px) { .qr, .qr-sys { grid-template-columns: 1fr; } }
+.qr-card .sub { font-size: 12px; margin: 4px 0 0; color: var(--muted); }

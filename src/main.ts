@@ -33,6 +33,8 @@ import {
   office,
   buyUpgrade,
   closeRound,
+  type SystemId,
+  costBreakdown,
   hireCandidate,
   HIRE_PERKS,
   RECRUIT_FEE,
@@ -84,7 +86,7 @@ import {
   type Effects,
   type GameState,
 } from "./game/state";
-import { applyReorg, CEO_SPAN, ceoSpan, HEALTHY_DEPTH, MANAGER_SPAN, managerOf, orgDepth, reportsOf, TITLE_IDS, TITLES, titleOf, wouldCycle, type OrgChange, type Title } from "./game/org";
+import { applyReorg, CEO_SPAN, ceoSpan, delegates, HEALTHY_DEPTH, MANAGER_SPAN, managerOf, orgDepth, reportsOf, TITLE_IDS, TITLES, titleOf, wouldCycle, type OrgChange, type Title } from "./game/org";
 import { BOARD_EVERY, boardMembers, enactMotion, pickMotion, rememberVote, tally } from "./game/board";
 import { FLOOR_COST, FLOOR_DESKS, FLOOR_RENT, NOVELTY_QUARTERS, OFFICES, UPGRADES, type OfficeTier, type UpgradeSpec } from "./game/office";
 
@@ -324,7 +326,7 @@ const ACTIONS: Action[] = [
 
 function renderActions() {
   const left = s.actionsLeft;
-  const pips = Array.from({ length: ACTIONS_PER_QUARTER }, (_, i) => `<i class="${i < left ? "on" : ""}"></i>`).join("");
+  const pips = Array.from({ length: Math.max(ACTIONS_PER_QUARTER, left) }, (_, i) => `<i class="${i < left ? "on" : ""}"></i>`).join("");
   $("#actions").innerHTML = GROUPS.map((g) => {
     const items = ACTIONS.filter((a) => a.group === g.id);
     return `<section class="group ${g.id}">
@@ -1189,6 +1191,7 @@ async function orgChart() {
       const titles = [`<option value="">${esc(e.role)}</option>`, ...TITLE_IDS.map((k) => `<option value="${k}" ${c.title === k ? "selected" : ""}>${esc(titleOf({ ...e, title: k }))} (+${fmt(TITLES[k].premium)}/q)</option>`)].join("");
       const flags = [
         team.length > MANAGER_SPAN ? chip(`${team.length} reports — drowning`, "bad") : team.length ? chip(`${team.length} reports`, "neutral") : "",
+        team.length && m >= 60 ? chip("team +10%", "good") : team.length && m <= 30 ? chip("team −10%", "bad") : "",
         c.title && c.title !== "lead" && !team.length ? chip("title, no team", "bad") : "",
         ownedBy(s, e.id).length && team.length >= 3 ? chip("too busy for " + ownedBy(s, e.id).map((k) => SYSTEMS[k].emoji).join(""), "bad") : "",
       ].join("");
@@ -1201,6 +1204,8 @@ async function orgChart() {
     const top = reportsOf(sim, null);
     const span = top.length;
     const depth = orgDepth(sim);
+    const moodOf = (x: Employee) => employeeMood(s, s.employees.find((o) => o.id === x.id)!);
+    const deleg = delegates(sim, moodOf);
     const cost = [...plan.values()].reduce((a, c) => {
       const before = s.employees.find((x) => x.id === c.id)!.title;
       return a + (c.title ? TITLES[c.title].premium : 0) - (before ? TITLES[before].premium : 0);
@@ -1212,10 +1217,12 @@ async function orgChart() {
     $("#org-body").innerHTML = `
       <div class="chips">
         ${chip(`${span} report to you`, span > CEO_SPAN ? "bad" : "good")}
+        ${deleg ? chip("🧭 Delegation: +1 decision", "good") : ""}
         ${chip(`${depth} layer${depth === 1 ? "" : "s"}`, depth > HEALTHY_DEPTH ? "bad" : "neutral")}
         ${cost ? chip(`Payroll ${cost > 0 ? "+" : ""}${fmt(cost)}/q`, cost > 0 ? "bad" : "good") : ""}
         ${changed ? chip(`${changed} change${changed === 1 ? "" : "s"}`, "neutral") : ""}
       </div>
+      <p class="sub">🧭 ≤4 direct reports and every manager has a happy team of 3–${MANAGER_SPAN}: +1 decision per quarter. Happy managers (mood 60+) get 10% more out of their team, miserable ones 10% less. When someone leaves, their manager inherits their systems.</p>
       ${span > CEO_SPAN ? `<p class="sub">⚠️ More than ${CEO_SPAN} direct reports: your calendar eats one decision every quarter.</p>` : ""}
       ${depth > HEALTHY_DEPTH ? `<p class="sub">⚠️ ${depth} layers: revenue −${(depth - HEALTHY_DEPTH) * 4}% to alignment meetings.</p>` : ""}
       ${warn ? `<p class="sub bad">${esc(warn)}</p>` : ""}
@@ -1426,6 +1433,87 @@ async function ceoPanel() {
   if (r.value === "resign") await newGame();
 }
 
+// ---------- quarterly report ----------
+
+function snapshot() {
+  return {
+    cash: s.cash,
+    revenue: quarterlyRevenue(s),
+    costs: costBreakdown(s),
+    morale: s.morale,
+    hype: s.hype,
+    suspicion: s.suspicion,
+    valuation: valuation(s),
+    staff: s.employees.length,
+    netWorth: netWorth(s),
+    systems: Object.fromEntries(SYSTEM_IDS.map((k) => [k, s.systems[k].health])) as Record<SystemId, number>,
+  };
+}
+
+function quarterReportHtml(q: number, b: ReturnType<typeof snapshot>, lines: string[]) {
+  const arrow = (d: number, goodUp = true) =>
+    d === 0 ? `<span class="d">±0</span>` : `<span class="d ${(d > 0) === goodUp ? "up" : "down"}">${d > 0 ? "▲" : "▼"}${Math.abs(d)}</span>`;
+  const money = (d: number, goodUp = true) =>
+    d === 0 ? "" : `<span class="d ${(d > 0) === goodUp ? "up" : "down"}">${d > 0 ? "▲" : "▼"}${fmt(Math.abs(d))}</span>`;
+  const c = b.costs;
+  const costTotal = c.payroll + c.rent + c.perks + c.you + c.saas;
+  const net = b.revenue - costTotal;
+  const runway = runwayQuarters(s);
+  const pl = [
+    ["💰 Revenue", b.revenue, "good"],
+    ["👥 Payroll", -c.payroll, ""],
+    [`${office(s).emoji} Rent`, -c.rent, ""],
+    ...(c.perks ? [["🛍️ Perk upkeep", -c.perks, ""]] : []),
+    ["🧩 SaaS licences", -c.saas, ""],
+    [c.you ? "🕶️ Your salary" : "🕶️ Your salary (frozen)", -c.you, ""],
+  ] as [string, number, string][];
+  const vital = (label: string, cls: string, from: number, to: number, goodUp = true) =>
+    `<div class="vital"><span>${label}</span><div class="bar ${cls}"><i style="width:${to}%"></i></div><b>${to}</b>${arrow(to - from, goodUp)}</div>`;
+  const tone = (l: string) =>
+    /🚨|📉|Broken promise|quit\.|📂|⭐|🏃|📨|Incident|nobody understands|miserable|eats|wall-to-wall|of nobody|no desk|layers of management/i.test(l)
+      ? "bad"
+      : /✅|🎯|kept a promise|adopted|crisis is over/i.test(l)
+        ? "good"
+        : "";
+  const story = lines.filter((l) => !/^Revenue |^Systems: /.test(l));
+  const fire = Math.min(100, (netWorth(s) / FIRE_TARGET) * 100);
+  return `<p class="kicker">Quarterly report · ${esc(s.company)}</p><h2>Q${q} closed</h2>
+    <div class="qr">
+      <section class="qr-card">
+        <h3>P&amp;L</h3>
+        ${pl.map(([k, v, cls]) => `<div class="pl ${cls}"><span>${k}</span><b>${v >= 0 ? "+" : "−"}${fmt(Math.abs(v))}</b></div>`).join("")}
+        <div class="pl total ${net >= 0 ? "good" : "bad"}"><span>${net >= 0 ? "Profit" : "Burn"}</span><b>${net >= 0 ? "+" : "−"}${fmt(Math.abs(net))}</b></div>
+        <div class="pl cashline"><span>Cash</span><b>${fmt(b.cash)} → ${fmt(s.cash)}</b></div>
+        <p class="sub">${runway === Infinity ? "Profitable. Investors are confused." : `Runway ${runway.toFixed(1)} quarters.`}</p>
+      </section>
+      <section class="qr-card">
+        <h3>Vitals</h3>
+        ${vital("Morale", "morale", b.morale, s.morale)}
+        ${vital("Hype", "hype", b.hype, s.hype)}
+        ${vital("Suspicion", "susp", b.suspicion, s.suspicion, false)}
+        <div class="pl"><span>📈 Valuation</span><b>${fmt(valuation(s))} ${money(valuation(s) - b.valuation)}</b></div>
+        <div class="pl"><span>👥 Staff</span><b>${s.employees.length} ${arrow(s.employees.length - b.staff)}</b></div>
+        <div class="pl"><span>🏝️ Your net worth</span><b>${fmt(netWorth(s))} ${money(netWorth(s) - b.netWorth)}</b></div>
+        <div class="bar fire"><i style="width:${fire}%"></i></div>
+        <p class="sub">${Math.round(fire)}% of the way to FIRE (${fmt(FIRE_TARGET)}).</p>
+      </section>
+    </div>
+    <section class="qr-card">
+      <h3>Systems</h3>
+      <div class="qr-sys">${SYSTEM_IDS.map((k) => {
+        const h = s.systems[k].health;
+        const o = s.employees.find((e) => e.id === s.systems[k].owner);
+        return `<div class="sys ${s.crises.includes(k) ? "crisis" : ""}">
+          <span>${SYSTEMS[k].emoji} ${SYSTEMS[k].name}</span>
+          <div class="bar ${h < 30 ? "susp" : h < 55 ? "warn" : "morale"}"><i style="width:${h}%"></i></div>
+          <b>${h}</b>${arrow(h - b.systems[k])}
+          <small>${o ? esc(o.name) : "<em>nobody</em>"}${s.crises.includes(k) ? " · 🚨 crisis" : ""}</small>
+        </div>`;
+      }).join("")}</div>
+    </section>
+    ${story.length ? `<section class="qr-card"><h3>What happened</h3>${story.map((l) => `<p class="qr-line ${tone(l)}">${esc(l)}</p>`).join("")}</section>` : ""}`;
+}
+
 // ---------- quarter loop ----------
 
 /** Ask for this quarter's event; the engine decides whether it's the next episode of a storyline. */
@@ -1546,16 +1634,14 @@ async function nextQuarter() {
   }
   const q = s.quarter;
   const crisesBefore = s.crises.length;
+  const before = snapshot();
   const report = endQuarter(s);
   if (s.crises.length > crisesBefore) music.play("crisis");
   report.lines.forEach((l) => log(s, l));
   render();
   if (s.over) return gameOver();
   prefetchEvent();
-  await modal(
-    `<p class="kicker">Quarterly report</p><h2>Q${q} closed</h2>${report.lines.map((l) => `<p>${esc(l)}</p>`).join("")}`,
-    [{ label: `Start Q${s.quarter}`, value: "ok" }],
-  );
+  await modal(quarterReportHtml(q, before, report.lines), [{ label: `Start Q${s.quarter}`, value: "ok", primary: true }], { wide: true });
   await startQuarter();
 }
 
