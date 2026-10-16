@@ -50,6 +50,8 @@ import {
   rememberAll,
   removeEmployee,
   damageSystems,
+  changeIdentity,
+  type IdentityChange,
   applyPeople,
   type PersonEffect,
   type Alumnus,
@@ -67,6 +69,7 @@ interface Judgement {
   memory: string;
   accepted: boolean;
   people: PersonEffect[];
+  company: IdentityChange;
   kpis: { quote: string; metric: "revenue" | "headcount" | "valuation" | "hype"; multiplier: number; quarters: number }[];
   narration: string;
   reactions: { speaker: string; line: string }[];
@@ -77,7 +80,7 @@ interface Judgement {
 interface GameEvent {
   title: string;
   description: string;
-  choices: { label: string; outcome: string; effects: Required<Effects>; people?: PersonEffect[] }[];
+  choices: { label: string; outcome: string; effects: Required<Effects>; people?: PersonEffect[]; company?: IdentityChange }[];
   mock: boolean;
 }
 
@@ -422,8 +425,10 @@ function peopleHtml(lines: string[]) {
 
 function judgementHtml(title: string, j: Judgement, extra = "", deltas: Partial<Record<string, number>> = j.deltas) {
   const touched = j.people?.length ? applyPeople(s, j.people) : [];
+  const identity = changeIdentity(s, j.company);
+  j.company = { name: "", product: "", distance: 0 }; // applied
   return `<h2>${esc(title)}</h2>
-    <p class="narr">${esc(j.narration)}</p>${peopleHtml(touched)}
+    <p class="narr">${esc(j.narration)}</p>${identity ? `<p class="big">🔀 ${esc(identity[0].toUpperCase() + identity.slice(1))}.</p>` : ""}${peopleHtml(touched)}
     ${j.reactions.map((r) => `<p class="quote"><b>${esc(r.speaker)}:</b> “${esc(r.line)}”</p>`).join("")}
     ${extra}
     <div class="chips">${deltaChips(deltas)}<span class="chip neutral">BS-meter ${j.bullshit_score}%</span></div>
@@ -556,15 +561,31 @@ function promiseBonus() {
   if (e) scene.bubble(e.id, "I'll believe it when I see it.");
 }
 
-function pivot() {
-  const old = s.product;
-  const options = PRODUCTS.filter((p) => p !== old);
-  s.product = options[Math.floor(Math.random() * options.length)];
-  applyEffects(s, { hype: 14, morale: -8 });
-  damageSystems(s, 22, ["product"]);
-  damageSystems(s, 12, ["sales"]);
-  s.actionsLeft--;
-  log(s, `Pivot! From "${old}" to "${s.product}". Engineering found out from TechCrunch.`);
+async function pivot() {
+  const ideas = PRODUCTS.filter((p) => p !== s.product);
+  const surprise = ideas[Math.floor(Math.random() * ideas.length)];
+  const r = await modal(
+    `<h2>🔀 Pivot</h2>
+    <p>Right now ${esc(s.company)}'s product is: <b>${esc(s.product)}</b>.${s.formerly.length ? ` <span class="sub">Formerly: ${s.formerly.slice(0, 2).map(esc).join("; ")}.</span>` : ""}</p>
+    <p>What are we now? Rename the company too if you like. The further from today's product, the more of Product and Sales goes in the bin.</p>`,
+    [
+      { label: "Cancel", value: "cancel" },
+      { label: "🎲 Surprise me", value: "surprise" },
+      { label: "Announce pivot", value: "go", primary: true },
+    ],
+    { input: "We're no longer a kebab app. We are now 'Kebabify AI' — agentic infrastructure for the doner economy." },
+  );
+  if (r.value === "cancel") return;
+  const text = r.value === "surprise" ? `We are pivoting. From now on we make a ${surprise}.` : r.text;
+  await withBusy(async () => {
+    loading("Updating the LinkedIn banner...");
+    const j = await judged("pivot", text);
+    if (!j.company.product && !j.company.name) j.company = { name: "", product: r.value === "surprise" ? surprise : text.slice(0, 70), distance: 60 };
+    applyEffects(s, j.deltas);
+    s.actionsLeft--;
+    showReactions(j);
+    await modal(judgementHtml("Pivot announced", j), [{ label: "Ship it", value: "ok" }]);
+  });
 }
 
 function offshore() {
@@ -903,7 +924,7 @@ async function startQuarter() {
     renderHud();
     const r = await modal(
       `<p class="kicker">Q${s.quarter} event</p><h2>${esc(ev.title)}</h2><p>${esc(ev.description)}</p>
-      <div class="choices">${ev.choices.map((c, i) => `<button class="choice" data-v="choice:${i}">${esc(c.label)}<span>${deltaChips(c.effects)}${(c.people ?? []).map((p) => chip(`👤 ${p.name.split(" ")[0]}${p.salary_change ? ` ${p.salary_change > 0 ? "+" : ""}${fmt(p.salary_change)}/q` : ""}`, p.mood_change >= 0 ? "good" : "bad")).join("")}</span></button>`).join("")}</div>
+      <div class="choices">${ev.choices.map((c, i) => `<button class="choice" data-v="choice:${i}">${esc(c.label)}<span>${deltaChips(c.effects)}${c.company?.name || c.company?.product ? chip(`🔀 ${c.company.name || c.company.product}`, "neutral") : ""}${(c.people ?? []).map((p) => chip(`👤 ${p.name.split(" ")[0]}${p.salary_change ? ` ${p.salary_change > 0 ? "+" : ""}${fmt(p.salary_change)}/q` : ""}`, p.mood_change >= 0 ? "good" : "bad")).join("")}</span></button>`).join("")}</div>
       <p class="sub">…or respond in your own words:</p>`,
       [{ label: "Respond with my text", value: "text", primary: true }],
       { input: "Write your own response (the game master will judge it)" },
@@ -911,12 +932,13 @@ async function startQuarter() {
     if (r.value.startsWith("choice:")) {
       const c = ev.choices[Number(r.value.slice(7))];
       const touched = applyPeople(s, c.people);
+      const identity = changeIdentity(s, c.company);
       const hc = c.effects.headcount < 0 ? Math.min(0, c.effects.headcount + (touched.left ?? 0)) : c.effects.headcount;
       const { gone } = applyEffects(s, { ...c.effects, headcount: hc });
       if (c.effects.offshore > 0) noticeZug(s);
       log(s, `${ev.title} → ${c.label}. ${c.outcome}`);
       render();
-      await modal(`<h2>${esc(c.label)}</h2><p class="narr">${esc(c.outcome)}</p>${peopleHtml(touched)}<div class="chips">${deltaChips(c.effects)}</div>
+      await modal(`<h2>${esc(c.label)}</h2><p class="narr">${esc(c.outcome)}</p>${identity ? `<p class="big">🔀 ${esc(identity[0].toUpperCase() + identity.slice(1))}.</p>` : ""}${peopleHtml(touched)}<div class="chips">${deltaChips(c.effects)}</div>
         ${gone.length ? `<p>Gone: ${gone.map((g) => esc(g.name)).join(", ")}</p>` : ""}`, [{ label: "OK", value: "ok" }]);
     } else {
       loading("The game master is judging your response...");
@@ -1038,7 +1060,7 @@ async function intro() {
   await modal(
     `<p class="kicker">${s.career > 1 ? `Career move #${s.career}` : "Welcome aboard"}</p>
     <h2>You are the new CEO of ${esc(s.company)}</h2>
-    <p>The company makes a <b>${esc(s.product)}</b>. ${s.employees.length} employees, ${fmt(s.cash)} in the bank, a ${office(s).emoji} ${esc(office(s).name.toLowerCase())} and a board that trusts you (for now).</p>
+    <p>The product: <b>${esc(s.product)}</b>. ${s.employees.length} employees, ${fmt(s.cash)} in the bank, a ${office(s).emoji} ${esc(office(s).name.toLowerCase())} and a board that trusts you (for now).</p>
     <p>Your official goal: grow the company. Your <i>actual</i> goal: <b>FIRE</b> — ${fmt(FIRE_TARGET)} of personal net worth.
     Get there with an honest IPO… or with creative “consulting fees” to a lovely little company in Zug. Just keep an eye on that suspicion bar.</p>
     <p class="sub">Tip: most things can be answered in your own words — the game master is an LLM and it is judging you.</p>`,

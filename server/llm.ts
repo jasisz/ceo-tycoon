@@ -86,7 +86,7 @@ async function withFallback<T>(llm: () => Promise<T>, mock: () => T): Promise<T 
 
 // ---------- judge: free-text CEO actions ----------
 
-export type Scene = "allhands" | "investors" | "employee" | "event" | "board" | "rehire";
+export type Scene = "allhands" | "investors" | "employee" | "event" | "board" | "rehire" | "pivot";
 
 export interface JudgeRequest {
   scene: Scene;
@@ -131,6 +131,28 @@ const clampPeople = (p: PeopleEffects) =>
     mood_change: Math.max(-30, Math.min(30, Math.round(x.mood_change))),
     new_quirk: x.new_quirk.slice(0, 120),
   }));
+
+/** Company identity changes: a pivot or a rebrand. Empty strings mean "unchanged". */
+const companySchema = {
+  type: "object",
+  description:
+    "Only if the company's name or what it does actually changes (a pivot, a rebrand, the CEO announcing 'we are now X'). Empty strings when unchanged.",
+  properties: {
+    name: { type: "string", description: "New company name, short, e.g. 'SynergyAI Inc.'. Empty if unchanged." },
+    product: { type: "string", description: "New description of what the company makes, lowercase noun phrase of max ~8 words, e.g. 'agentic AI for kebab shops'. Empty if unchanged." },
+    distance: { type: "integer", description: "0-100: how far the new product is from the old one (0 = same thing, 100 = unrelated industry). 0 if unchanged." },
+  },
+  required: ["name", "product", "distance"],
+  additionalProperties: false,
+} as const;
+
+const Company = z.object({ name: z.string(), product: z.string(), distance: z.number() });
+const EMPTY_COMPANY = { name: "", product: "", distance: 0 };
+const clampCompany = (c: z.infer<typeof Company> = EMPTY_COMPANY) => ({
+  name: c.name.trim().slice(0, 40),
+  product: c.product.trim().replace(/\.$/, "").slice(0, 70),
+  distance: Math.max(0, Math.min(100, Math.round(c.distance))),
+});
 
 const judgeSchema = {
   type: "object",
@@ -178,6 +200,7 @@ const judgeSchema = {
     },
     accepted: { type: "boolean", description: "Only for the 'rehire' scene: does the former employee agree to come back? false for all other scenes." },
     people: peopleSchema,
+    company: companySchema,
     kpis: {
       type: "array",
       description:
@@ -195,7 +218,7 @@ const judgeSchema = {
       },
     },
   },
-  required: ["deltas", "consequences", "narration", "reactions", "promises", "bullshit_score", "memory", "accepted", "people", "kpis"],
+  required: ["deltas", "consequences", "narration", "reactions", "promises", "bullshit_score", "memory", "accepted", "people", "company", "kpis"],
   additionalProperties: false,
 } as const;
 
@@ -209,6 +232,7 @@ const Judgement = z.object({
   memory: z.string(),
   accepted: z.boolean(),
   people: PeopleEffects,
+  company: Company,
   kpis: z.array(z.object({ quote: z.string(), metric: z.enum(["revenue", "headcount", "valuation", "hype"]), multiplier: z.number(), quarters: z.number() })),
 });
 export type Judgement = z.infer<typeof Judgement>;
@@ -219,6 +243,8 @@ const SCENE_BRIEF: Record<Scene, string> = {
     "The CEO is pitching to investors for a funding round. Investor reactions dominate; employees barely notice unless the CEO promises layoffs or similar. Record every concrete numeric promise about the future in kpis - investors write those down.",
   board:
     "The board of directors has called the CEO in to explain the problems listed below. The board is skeptical and has read the numbers. Vague corporate speak and blaming the market raise suspicion; owning the problem with a concrete plan lowers it. Blaming a specific former employee can work, but they may hear about it.",
+  pivot:
+    "The CEO is announcing a pivot: the company will now do something else, described below in their own words. Fill company.product with a crisp description of the new thing (and company.name if they rename it, or if a rebrand is obviously implied). Investors (hype) love whatever is fashionable; employees (morale) hate whiplash, the further from the old product the worse. Reactions come from employees and one investor.",
   rehire:
     "The CEO is trying to convince a former employee to come back as a well-paid contractor, usually because only they understand a system that is now broken. They remember everything in their history and their grudge level. Set accepted=true only if the CEO genuinely addresses what went wrong (an apology that sounds real, paying what was promised, respect). Groveling corporate speak or new promises from a CEO who broke old ones should fail. The reaction is that person speaking.",
   employee:
@@ -251,6 +277,10 @@ function mockJudge(req: JudgeRequest): Judgement {
     promises: bonus > 0 && !inv ? [{ text: "That bonus you mentioned", quarters_until_due: 2, cost: 50_000 }] : [],
     bullshit_score: Math.min(100, buzz * 15),
     memory: req.scene === "employee" || req.scene === "rehire" ? "[mock] The CEO talked at me for a while." : "",
+    company:
+      req.scene === "pivot"
+        ? { name: "", product: req.text.trim().toLowerCase().replace(/^(we are|we're|now)\s+/, "").slice(0, 70), distance: 60 }
+        : EMPTY_COMPANY,
     people:
       req.scene === "employee" && req.npc && /\braise\b/.test(t) && !/\b(next|soon|later|promise)\b/.test(t)
         ? [{ name: req.npc.name, memory: "[mock] The CEO gave me a raise on the spot.", salary_change: 5_000, mood_change: 15, new_quirk: "", leaves: false }]
@@ -289,6 +319,7 @@ export function judge(req: JudgeRequest) {
               ? clampPeople(j.people).filter((p) => p.name.toLowerCase().includes((req.npc?.name ?? "").split(" ")[0].toLowerCase()))
               : clampPeople(j.people),
         kpis: req.scene === "investors" ? j.kpis.slice(0, 3) : [],
+        company: req.scene === "employee" || req.scene === "rehire" ? EMPTY_COMPANY : clampCompany(j.company),
         memory: j.memory.slice(0, 200),
       };
     },
@@ -327,8 +358,9 @@ const eventSchema = {
           outcome: { type: "string", description: "One funny sentence describing the consequence" },
           effects: effectSchema,
           people: peopleSchema,
+          company: companySchema,
         },
-        required: ["label", "outcome", "effects", "people"],
+        required: ["label", "outcome", "effects", "people", "company"],
         additionalProperties: false,
       },
     },
@@ -348,7 +380,7 @@ const Effects = z.object({
 const GameEvent = z.object({
   title: z.string(),
   description: z.string(),
-  choices: z.array(z.object({ label: z.string(), outcome: z.string(), effects: Effects, people: PeopleEffects.optional() })).min(2),
+  choices: z.array(z.object({ label: z.string(), outcome: z.string(), effects: Effects, people: PeopleEffects.optional(), company: Company.optional() })).min(2),
 });
 export type GameEvent = z.infer<typeof GameEvent>;
 
@@ -411,14 +443,14 @@ function mockEvent(): GameEvent {
 
 export function generateEvent(context: string, recentTitles: string[]) {
   const user = `Invent this quarter's random event for the CEO. It should react to the current state of the company (low morale, high suspicion, shrinking runway, weird pivots, broken promises...) or be a classic startup absurdity (license shortages, English lessons, sudden urge to pivot or buy an unrelated company, reorganisations, office plants, the co-CEO proposal, a viral Glassdoor review...).
-Make effects proportional and consistent with the outcomes. If the event is about specific employees, use their exact names from the roster and record, per choice, what happens to them in "people" (a raise must have a salary_change, a resolved grievance a new_quirk). Don't repeat these recent events: ${recentTitles.join("; ") || "none"}.
+Make effects proportional and consistent with the outcomes. A choice may rename the company or change what it makes (fill company) - e.g. a panic rebrand to something with AI in the name - but only when the choice is literally that. If the event is about specific employees, use their exact names from the roster and record, per choice, what happens to them in "people" (a raise must have a salary_change, a resolved grievance a new_quirk). Don't repeat these recent events: ${recentTitles.join("; ") || "none"}.
 
 Game state:
 ${context}`;
   return withFallback(
     async () => {
       const ev = GameEvent.parse(await ask(WORLD, user, eventSchema));
-      return { ...ev, choices: ev.choices.slice(0, 3).map((c) => ({ ...c, effects: clampEffects(c.effects), people: clampPeople(c.people ?? []) })) };
+      return { ...ev, choices: ev.choices.slice(0, 3).map((c) => ({ ...c, effects: clampEffects(c.effects), people: clampPeople(c.people ?? []), company: clampCompany(c.company) })) };
     },
     mockEvent,
   );
