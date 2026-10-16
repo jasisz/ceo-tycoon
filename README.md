@@ -42,6 +42,8 @@ downsides stay).
   announce the reorg and watch the politics. More than 6 direct reports eats one of your decisions
   every quarter; managers' moods leak into their teams; too many layers cost revenue in meetings;
   promote your best engineer to manager and nobody maintains infra anymore. Skip-level 1:1s get noticed.
+  Get it right and it pays: few direct reports plus happy managers frees up an extra decision, good
+  managers squeeze 10% more out of their teams, and a manager inherits the systems of whoever quits.
 - **Hiring**: the LLM sends three candidates with CVs, red flags and whatever they've heard about you.
   Pick one, set salary and a sweetener, make your case. They can say no.
 - **Herr Brunner**: money moves to Zug through a scheme of your choice (consulting invoice, Alpine
