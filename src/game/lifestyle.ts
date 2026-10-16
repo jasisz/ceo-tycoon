@@ -1,4 +1,5 @@
-// CEO lifestyle: things that look great on LinkedIn. Pay with your own savings (FIRE slips away) or
+// CEO lifestyle: things that look great on LinkedIn. The LLM invents a fresh, personal catalogue
+// every quarter (the list below is the offline fallback); this module clamps every number. Pay with your own savings (FIRE slips away) or
 // put it on the company card (suspicion, receipts, auditors). The LLM knows what you own.
 
 import type { GameState } from "./state";
@@ -36,13 +37,14 @@ export const LIFESTYLE: LifestyleItem[] = [
 export function lifestyleEffects(s: GameState) {
   const fx = { hype: 0, morale: 0, reputation: 0, decisions: 0 };
   for (const o of s.lifestyle) {
-    const it = lifestyleById(o.id);
+    const it = ownedItem(o);
     if (!it) continue;
     fx.hype += it.perQ?.hype ?? 0;
     fx.morale += it.perQ?.morale ?? 0;
     fx.reputation += it.perQ?.reputation ?? 0;
     fx.decisions += it.decisions ?? 0;
   }
+  fx.decisions = Math.min(1, fx.decisions); // you can only be in so many places
   return fx;
 }
 
@@ -52,6 +54,31 @@ export interface Owned {
   id: string;
   quarter: number;
   payer: Payer;
+  item?: LifestyleItem; // full stats (LLM-invented items aren't in the static list)
+}
+
+export const ownedItem = (o: Owned) => o.item ?? lifestyleById(o.id);
+
+const cl = (v: unknown, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(Number(v) || 0)));
+
+/** Whatever the LLM dreamt up, the numbers stay sane: expensive things impress more, nothing is free. */
+export function clampItem(x: Partial<LifestyleItem> & { name: string }, i: number): LifestyleItem {
+  const cost = cl(x.cost, 300, 400_000);
+  const scale = Math.min(1, 0.35 + cost / 150_000); // a $500 thing can't out-impress a jet
+  return {
+    id: `x${Date.now().toString(36)}${i}`,
+    name: String(x.name).slice(0, 60),
+    emoji: String(x.emoji || "✨").slice(0, 4),
+    cost,
+    upkeep: cl(x.upkeep, 0, 60_000) || undefined,
+    hype: cl(Math.min(Number(x.hype) || 0, 10 * scale), 0, 10),
+    reputation: cl(Math.min(Number(x.reputation) || 0, 8 * scale), 0, 8),
+    morale: cl(x.morale, -12, 0),
+    perQ: { hype: cl(x.perQ?.hype, 0, 3), morale: cl(x.perQ?.morale, -3, 0), reputation: cl(x.perQ?.reputation, 0, 2) },
+    decisions: x.decisions && cost >= 100_000 && (x.upkeep ?? 0) >= 25_000 ? 1 : undefined,
+    blurb: String(x.blurb ?? "").slice(0, 160),
+    gossip: String(x.gossip ?? x.name).slice(0, 100),
+  };
 }
 
 /** Putting it on the company card: suspicion scales with the receipt, more if a CFO reads them. */
@@ -62,7 +89,7 @@ export function describeLifestyle(s: GameState) {
   if (!s.lifestyle.length) return "";
   return `The CEO's lifestyle: ${s.lifestyle
     .map((o) => {
-      const it = lifestyleById(o.id);
+      const it = ownedItem(o);
       return it ? `${it.gossip} (${o.payer === "company" ? "expensed to the company" : "paid personally"})` : "";
     })
     .filter(Boolean)

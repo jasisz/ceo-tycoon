@@ -130,3 +130,36 @@ export const UPGRADES: UpgradeSpec[] = [
 export const NOVELTY_QUARTERS = 3;
 
 export const upgradeById = (id: string) => UPGRADES.find((u) => u.id === id);
+
+const cl = (v: unknown, lo: number, hi: number) => Math.max(lo, Math.min(hi, Number(v) || 0));
+
+/** An LLM-invented perk, with sane numbers: the more it does, the more it costs. */
+export function clampUpgrade(x: Partial<UpgradeSpec> & { name: string }, i: number, remote: boolean): UpgradeSpec {
+  const perHead = !!x.perHead;
+  const cost = Math.round(cl(x.cost, perHead ? 100 : 1_000, perHead ? 3_000 : 150_000));
+  const budget = 1 + (perHead ? cost / 600 : cost / 20_000); // how much upside the price buys
+  let morale = Math.round(cl(x.morale, -2, 3));
+  let hype = Math.round(cl(x.hype, -1, 4));
+  let revenue = Math.round(cl(x.revenue, -0.05, 0.04) * 100) / 100;
+  const upside = Math.max(0, morale) + Math.max(0, hype) + Math.max(0, revenue) * 50;
+  if (upside > budget) {
+    const k = budget / upside;
+    morale = morale > 0 ? Math.floor(morale * k) : morale;
+    hype = hype > 0 ? Math.floor(hype * k) : hype;
+    revenue = revenue > 0 ? Math.floor(revenue * k * 100) / 100 : revenue;
+  }
+  return {
+    id: `c${Date.now().toString(36)}${i}`,
+    name: String(x.name).slice(0, 50),
+    emoji: String(x.emoji || "✨").slice(0, 4),
+    cost,
+    perHead: perHead || undefined,
+    morale,
+    hype,
+    revenue,
+    upkeep: Math.round(cl(x.upkeep, 0, perHead ? 600 : 15_000)),
+    remote: remote ? "only" : "no",
+    blurb: String(x.blurb ?? "").slice(0, 160),
+    gossip: String(x.gossip ?? x.name).slice(0, 100),
+  };
+}

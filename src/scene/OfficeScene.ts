@@ -61,6 +61,7 @@ export interface OfficeView {
   floors: number;
   upgrades: string[];
   headcount: number;
+  custom?: { id: string; emoji: string; name: string; blurb: string }[]; // LLM-invented perks: drawn as a prop with their emoji
 }
 
 interface Person {
@@ -747,6 +748,19 @@ export class OfficeScene extends Phaser.Scene {
           r.on("pointerover", () => this.showTip(r, "AI receptionist. Definitely not recording this."));
           r.on("pointerout", () => this.hideTip());
           r.on("pointerdown", () => this.bubbleOn(r, Phaser.Utils.Array.GetRandom(["Hello, human. Your badge has been logged.", "I have summarised your face.", "Welcome! Please hold for synergy."])));
+          break;
+        }
+        default: {
+          const c = this.view.custom?.find((x) => x.id === id);
+          if (!c) break;
+          const p = this.iso(s.x + 0.4, s.y + 0.4);
+          const prop = this.add.container(p.x, p.y).setDepth(p.y + 1);
+          const g = this.add.graphics();
+          g.fillStyle(0xf1f3f9).fillRoundedRect(-11, -14, 22, 14, 3).lineStyle(1.5, INK).strokeRoundedRect(-11, -14, 22, 14, 3);
+          prop.add([this.add.ellipse(0, 0, 22, 7, 0x000000, 0.15), g, this.txt(0, -15, c.emoji, { fontSize: "20px" }).setOrigin(0.5, 1)]);
+          prop.setInteractive(new Phaser.Geom.Rectangle(-14, -40, 28, 42), Phaser.Geom.Rectangle.Contains);
+          prop.on("pointerover", () => this.showTip(prop, `${c.name} · ${c.blurb}`));
+          prop.on("pointerout", () => this.hideTip());
           break;
         }
       }

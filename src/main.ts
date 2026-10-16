@@ -93,9 +93,9 @@ import {
   type GameState,
 } from "./game/state";
 import { applyReorg, CEO_SPAN, ceoSpan, delegates, HEALTHY_DEPTH, MANAGER_SPAN, managerOf, orgDepth, reportsOf, TITLE_IDS, TITLES, titleOf, wouldCycle, type OrgChange, type Title } from "./game/org";
-import { expenseSuspicion, LIFESTYLE, type Payer } from "./game/lifestyle";
+import { clampItem, expenseSuspicion, LIFESTYLE, ownedItem, type LifestyleItem, type Owned, type Payer } from "./game/lifestyle";
 import { BOARD_EVERY, boardMembers, enactMotion, pickMotion, rememberVote, tally } from "./game/board";
-import { FLOOR_COST, FLOOR_DESKS, FLOOR_RENT, NOVELTY_QUARTERS, OFFICES, UPGRADES, type OfficeTier, type UpgradeSpec } from "./game/office";
+import { clampUpgrade, FLOOR_COST, FLOOR_DESKS, FLOOR_RENT, NOVELTY_QUARTERS, OFFICES, UPGRADES, type OfficeTier, type UpgradeSpec } from "./game/office";
 
 // ---------- API ----------
 
@@ -389,7 +389,7 @@ function render() {
   renderHud();
   renderActions();
   renderLog();
-  scene?.setView({ tier: s.office, floors: s.floors, upgrades: s.upgrades, headcount: s.employees.length });
+  scene?.setView({ tier: s.office, floors: s.floors, upgrades: s.upgrades, headcount: s.employees.length, custom: s.customUpgrades.filter((u) => s.upgrades.includes(u.id)).map((u) => ({ id: u.id, emoji: u.emoji, name: u.name, blurb: u.blurb })) });
   scene?.sync(s.employees);
   scene?.setOffshore(s.offshore);
 }
@@ -1029,45 +1029,65 @@ async function doIpo() {
 
 // ---------- CEO lifestyle ----------
 
+async function lifestyleOffers(): Promise<LifestyleItem[]> {
+  if (s.lifestyleOffers?.quarter === s.quarter) return s.lifestyleOffers.items;
+  loading("Your concierge is curating options...");
+  let items: LifestyleItem[] = [];
+  try {
+    const r = await api<{ items: (Partial<LifestyleItem> & { name: string })[]; mock?: boolean }>("/api/lifestyle", { context: describe(s) });
+    items = r.items.map(clampItem);
+  } catch {
+    /* fall through to the classics */
+  }
+  // the classics are always on the menu, the concierge adds this quarter's specials
+  const classics = LIFESTYLE.filter((x) => !s.lifestyle.some((o) => o.id === x.id)).sort(() => Math.random() - 0.5).slice(0, items.length ? 3 : 6);
+  s.lifestyleOffers = { quarter: s.quarter, items: [...items, ...classics] };
+  return s.lifestyleOffers.items;
+}
+
 async function lifestyleShop() {
+  const offers = await withBusy(lifestyleOffers);
+  if (!offers) return;
   let last = "";
   for (;;) {
-    const cards = LIFESTYLE.map((it) => {
-      const owned = s.lifestyle.find((o) => o.id === it.id);
+    const owned = s.lifestyle.map((o) => ownedItem(o)).filter((x): x is LifestyleItem => !!x);
+    const card = (it: LifestyleItem, mine?: Owned) => {
       const q = it.perQ ?? {};
       const fx = [
         it.decisions ? chip(`+${it.decisions} decision/q`, "good") : "",
         chip(`Hype +${it.hype}${q.hype ? `, then +${q.hype}/q` : ""}`, "good"),
         it.reputation || q.reputation ? chip(`Rep +${it.reputation}${q.reputation ? `, +${q.reputation}/q` : ""}`, "good") : "",
-        it.morale ? chip(`Morale ${it.morale}${q.morale ? `, ${q.morale}/q` : ""}`, "bad") : "",
+        it.morale || q.morale ? chip(`Morale ${it.morale}${q.morale ? `, ${q.morale}/q` : ""}`, "bad") : "",
         it.upkeep ? chip(`${fmt(it.upkeep)}/q forever`, "bad") : "",
       ].join("");
       const btn = (payer: Payer, label: string) => {
-        const block = lifestyleBlocker(s, it.id, payer);
+        const block = lifestyleBlocker(s, it, payer);
         return `<button data-v="${payer}:${it.id}" ${block ? `disabled title="${esc(block)}"` : ""}>${label}</button>`;
       };
-      return `<div class="choice ls ${owned ? "owned" : ""}">
-        <b>${it.emoji} ${esc(it.name)} <span class="price">${owned ? (owned.payer === "company" ? "✓ expensed" : "✓ yours") : fmt(it.cost)}</span></b>
+      return `<div class="choice ls ${mine ? "owned" : ""}">
+        <b>${esc(it.emoji)} ${esc(it.name)} <span class="price">${mine ? (mine.payer === "company" ? "✓ expensed" : "✓ yours") : fmt(it.cost)}</span></b>
         <small>${esc(it.blurb)}</small>
         <span>${fx}</span>
-        ${owned ? "" : `<div class="ls-pay">${btn("self", "💳 My savings")}${btn("company", `🏢 Company card · suspicion +${expenseSuspicion(s, it)}`)}</div>`}
+        ${mine ? "" : `<div class="ls-pay">${btn("self", "💳 My savings")}${btn("company", `🏢 Company card · suspicion +${expenseSuspicion(s, it)}`)}</div>`}
       </div>`;
-    });
+    };
+    const forSale = offers.filter((it) => !owned.some((o) => o.name === it.name));
     const r = await modal(
-      `<h2>💳 Lifestyle</h2>
-      <p class="sub">Your savings ${fmt(s.savings)} · company cash ${fmt(s.cash)}${s.expensed ? ` · already expensed ${fmt(s.expensed)} (auditors love receipts)` : ""}. Buying doesn't use a decision.</p>
+      `<h2>💳 Lifestyle <small>Q${s.quarter} picks</small></h2>
+      <p class="sub">Your savings ${fmt(s.savings)} · company cash ${fmt(s.cash)}${s.expensed ? ` · already expensed ${fmt(s.expensed)} (auditors love receipts)` : ""}. New picks every quarter. Buying doesn't use a decision.</p>
       ${last ? `<p class="promise">${last}</p>` : ""}
-      <div class="choices ls-grid">${cards.join("")}</div>`,
+      <div class="choices ls-grid">${forSale.map((it) => card(it)).join("")}</div>
+      ${s.lifestyle.length ? `<h3 class="team-h">What you already own</h3><div class="choices ls-grid">${s.lifestyle.map((o) => (ownedItem(o) ? card(ownedItem(o)!, o) : "")).join("")}</div>` : ""}`,
       [{ label: "Done shopping", value: "close" }],
       { wide: true },
     );
     const [payer, id] = r.value.split(":") as [Payer, string];
-    if (!id || lifestyleBlocker(s, id, payer)) return;
-    const out = buyLifestyle(s, id, payer);
-    const it = LIFESTYLE.find((x) => x.id === id)!;
+    const it = offers.find((x) => x.id === id);
+    if (!it || lifestyleBlocker(s, it, payer)) return;
+    const out = buyLifestyle(s, it, payer);
     music.play(payer === "company" ? "zug" : "kaching");
     scene.ceoBubble(payer === "company" ? "Client development." : "I earned this.");
-    last = `${it.emoji} ${esc(it.name)}: ${out.map(esc).join(" ")}`;
+    last = `${esc(it.emoji)} ${esc(it.name)}: ${out.map(esc).join(" ")}`;
     render();
   }
 }
@@ -1143,13 +1163,33 @@ function upgradeCard(u: UpgradeSpec) {
   </button>`;
 }
 
+async function shopSpecials(): Promise<UpgradeSpec[]> {
+  if (s.shopOffers?.quarter === s.quarter) return s.shopOffers.items;
+  loading("A vendor is setting up a booth in your lobby...");
+  let items: UpgradeSpec[] = [];
+  try {
+    const r = await api<{ items: (Partial<UpgradeSpec> & { name: string })[]; mock?: boolean }>("/api/perks", { context: describe(s), remote: s.office === "remote" });
+    items = r.items.map((x, i) => clampUpgrade(x, i, s.office === "remote"));
+  } catch {
+    /* just the catalogue this time */
+  }
+  s.shopOffers = { quarter: s.quarter, items };
+  return items;
+}
+
 async function shop() {
+  const specials = (await withBusy(shopSpecials)) ?? [];
   for (;;) {
     const o = office(s);
-    const list = UPGRADES.filter((u) => (s.office === "remote" ? u.remote !== "no" : u.remote !== "only"));
+    const fits = (u: UpgradeSpec) => (s.office === "remote" ? u.remote !== "no" : u.remote !== "only");
+    const list = UPGRADES.filter(fits);
+    const owned = s.customUpgrades.filter((u) => s.upgrades.includes(u.id) && !specials.some((x) => x.id === u.id));
     const r = await modal(
       `<h2>🛍️ Office shop</h2>
       <p class="sub">${o.emoji} ${esc(o.name)} · ${s.upgrades.length}/${o.upgradeSlots} perk slots used · cash ${fmt(s.cash)}. Buying doesn't use a decision. Upkeep adds to your burn; the novelty wears off after ${NOVELTY_QUARTERS} quarters.</p>
+      ${specials.length ? `<h3 class="team-h">✨ This quarter's specials <small>new vendors every quarter</small></h3><div class="choices">${specials.filter(fits).map(upgradeCard).join("")}</div>` : ""}
+      ${owned.length ? `<h3 class="team-h">Specials you bought earlier</h3><div class="choices">${owned.map(upgradeCard).join("")}</div>` : ""}
+      <h3 class="team-h">The catalogue</h3>
       <div class="choices">${list.map(upgradeCard).join("")}</div>`,
       [{ label: "Done shopping", value: "close" }],
     );
@@ -1631,7 +1671,7 @@ async function ceoPanel() {
       <p>Offshore account (Zug): <b>${fmt(s.offshore)}</b></p>
       <p>Equity: <b>${(s.equity * 100).toFixed(1)}%</b> ≈ ${fmt(valuation(s) * s.equity)} on paper</p>
       <p>Reputation: <b>${s.reputation}/100</b></p>
-      ${s.lifestyle.length ? `<p>Lifestyle: ${s.lifestyle.map((o) => LIFESTYLE.find((x) => x.id === o.id)?.emoji ?? "").join(" ")}${s.expensed ? ` <span class="sub">(${fmt(s.expensed)} on the company card)</span>` : ""}</p>` : ""}
+      ${s.lifestyle.length ? `<p>Lifestyle: ${s.lifestyle.map((o) => ownedItem(o)?.emoji ?? "").join(" ")}${s.expensed ? ` <span class="sub">(${fmt(s.expensed)} on the company card)</span>` : ""}</p>` : ""}
       <p>Net worth: <b>${fmt(netWorth(s))}</b> of ${fmt(FIRE_TARGET)} FIRE target</p>
     </div>
     ${s.threads.length ? `<h3>📖 Storylines</h3>${s.threads.map((t) => `<details><summary><b>${esc(t.title)}</b> · ${t.open ? "ongoing" : "closed"} · ${t.episodes.length} ep.</summary>${t.episodes.map((e) => `<p class="sub">${esc(e)}</p>`).join("")}</details>`).join("")}` : ""}

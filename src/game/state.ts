@@ -14,7 +14,7 @@ import {
   type OfficeTier,
   type UpgradeSpec,
 } from "./office";
-import { describeLifestyle, expenseSuspicion, lifestyleById, lifestyleEffects, type Owned, type Payer } from "./lifestyle";
+import { describeLifestyle, expenseSuspicion, lifestyleEffects, ownedItem, type LifestyleItem, type Owned, type Payer } from "./lifestyle";
 import { bureaucracyDrag, ceoSpan, delegates, teamOutput, cSuiteHype, CEO_SPAN, describeOrg, orphanReports, placeHire, reportsOf, stepOrg, titleOf, type Title } from "./org";
 
 export const FIRE_TARGET = 5_000_000;
@@ -152,6 +152,8 @@ export interface GameState {
   office: OfficeTier;
   floors: number; // extra leased floors (open space only)
   upgrades: string[];
+  customUpgrades: UpgradeSpec[]; // LLM-invented perks the CEO bought
+  shopOffers?: { quarter: number; items: UpgradeSpec[] }; // this quarter's specials
   upgradeBought: Record<string, number>; // quarter each perk was bought, for the novelty to wear off
   employees: Employee[];
   promises: PromiseItem[];
@@ -166,6 +168,7 @@ export interface GameState {
   guarantee: number; // what you personally owe if the company dies
   ceoSalary: number; // per quarter, set by you
   lifestyle: Owned[]; // what the CEO bought, and who paid
+  lifestyleOffers?: { quarter: number; items: LifestyleItem[] }; // this quarter's catalogue
   expensed: number; // lifestyle put on this company's card, not yet found by auditors
   cfo?: string; // the board's CFO, if they appointed one
   payFrozenUntil?: number; // the board froze your salary until this quarter
@@ -243,6 +246,7 @@ export function loadGame(): GameState | null {
     s.floors ??= 0;
     s.upgrades ??= [];
     s.upgradeBought ??= {};
+    s.customUpgrades ??= [];
     s.liquidationPref ??= 0;
     s.lastMediaQuarter ??= -10;
     s.lastBoardVote ??= 0;
@@ -402,6 +406,7 @@ export function newCompany(prev?: GameState): GameState {
     floors: 0,
     upgrades: [],
     upgradeBought: {},
+    customUpgrades: [],
     employees: [],
     promises: [],
     systems: freshSystems(),
@@ -498,7 +503,10 @@ export function compactDesks(s: GameState) {
   }
 }
 
-const ownedUpgrades = (s: GameState) => s.upgrades.flatMap((id) => upgradeById(id) ?? []);
+/** Built-in perk, one the CEO bought from the specials, or one on offer this quarter. */
+export const findUpgrade = (s: GameState, id: string) => upgradeById(id) ?? s.customUpgrades.find((u) => u.id === id) ?? s.shopOffers?.items.find((u) => u.id === id);
+
+const ownedUpgrades = (s: GameState) => s.upgrades.flatMap((id) => findUpgrade(s, id) ?? []);
 
 /** Per-quarter morale/hype of a perk: full while it's new, then the upside halves. The downsides never fade. */
 export function perkEffect(s: GameState, u: UpgradeSpec) {
@@ -512,13 +520,13 @@ export const isOldNews = (s: GameState, id: string) => s.quarter - (s.upgradeBou
 export const upkeepOf = (s: GameState, u: UpgradeSpec) => (u.perHead ? u.upkeep * s.employees.length : u.upkeep);
 
 export function upgradeCost(s: GameState, id: string) {
-  const u = upgradeById(id)!;
+  const u = findUpgrade(s, id)!;
   return u.perHead ? u.cost * Math.max(1, s.employees.length) : u.cost;
 }
 
 /** Why an upgrade can't be bought right now, or null if it can. */
 export function upgradeBlocker(s: GameState, id: string): string | null {
-  const u = upgradeById(id);
+  const u = findUpgrade(s, id);
   if (!u) return "Unknown";
   if (s.upgrades.includes(id)) return "Owned";
   if (s.office === "remote" && u.remote === "no") return "Needs an office";
@@ -529,11 +537,12 @@ export function upgradeBlocker(s: GameState, id: string): string | null {
 }
 
 export function buyUpgrade(s: GameState, id: string) {
-  const u = upgradeById(id)!;
+  const u = findUpgrade(s, id)!;
   const cost = upgradeCost(s, id);
   s.cash -= cost;
   s.upgrades.push(id);
   s.upgradeBought[id] = s.quarter;
+  if (!upgradeById(id) && !s.customUpgrades.some((x) => x.id === id)) s.customUpgrades.push(u);
   log(s, `Bought ${u.emoji} ${u.name} for ${fmt(cost)}. ${u.blurb}`);
 }
 
@@ -551,7 +560,7 @@ export function moveOffice(s: GameState, tier: OfficeTier) {
   const to = OFFICES[tier];
   s.cash -= to.moveCost;
   const lost = s.upgrades.filter((id) => {
-    const u = upgradeById(id)!;
+    const u = findUpgrade(s, id)!;
     return tier === "remote" ? u.remote === "no" : u.remote === "only";
   });
   s.upgrades = s.upgrades.filter((id) => !lost.includes(id)).slice(0, to.upgradeSlots);
@@ -562,7 +571,7 @@ export function moveOffice(s: GameState, tier: OfficeTier) {
   if (tier === "remote") {
     s.morale = clamp(s.morale + 6);
     s.hype = clamp(s.hype - 4);
-    log(s, `Went remote-first. The office is now a Notion page. ${lost.length ? `Left behind: ${lost.map((id) => upgradeById(id)!.emoji).join(" ")}.` : ""}`);
+    log(s, `Went remote-first. The office is now a Notion page. ${lost.length ? `Left behind: ${lost.map((id) => findUpgrade(s, id)!.emoji).join(" ")}.` : ""}`);
   } else if (to.rank > from.rank) {
     s.hype = clamp(s.hype + 6 + to.rank * 2);
     s.morale = clamp(s.morale + 4);
@@ -692,23 +701,21 @@ export function hireCandidate(
 }
 
 export const lifestyleUpkeep = (s: GameState, payer: Payer) =>
-  s.lifestyle.filter((o) => o.payer === payer).reduce((a, o) => a + (lifestyleById(o.id)?.upkeep ?? 0), 0);
+  s.lifestyle.filter((o) => o.payer === payer).reduce((a, o) => a + (ownedItem(o)?.upkeep ?? 0), 0);
 
 /** Why the CEO can't buy this right now, or null. */
-export function lifestyleBlocker(s: GameState, id: string, payer: Payer): string | null {
-  const it = lifestyleById(id);
-  if (!it) return "Unknown";
-  if (s.lifestyle.some((o) => o.id === id)) return "Owned";
+export function lifestyleBlocker(s: GameState, it: LifestyleItem, payer: Payer): string | null {
+  if (s.lifestyle.some((o) => o.id === it.id || ownedItem(o)?.name === it.name)) return "Owned";
   if (payer === "self" && s.savings < it.cost) return "Your savings say no";
   if (payer === "company" && s.cash < it.cost * 2) return "Even you can't justify it now";
   return null;
 }
 
 /** Buy something nice. Returns what happened, for the result screen. */
-export function buyLifestyle(s: GameState, id: string, payer: Payer): string[] {
-  const it = lifestyleById(id)!;
+export function buyLifestyle(s: GameState, it: LifestyleItem, payer: Payer): string[] {
+  const id = it.id;
   const out: string[] = [];
-  s.lifestyle.push({ id, quarter: s.quarter, payer });
+  s.lifestyle.push({ id, quarter: s.quarter, payer, item: it });
   s.hype = clamp(s.hype + it.hype);
   s.reputation = clamp(s.reputation + it.reputation);
   s.morale = clamp(s.morale + it.morale);

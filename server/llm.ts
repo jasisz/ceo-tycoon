@@ -827,3 +827,131 @@ export function ghostwrite(context: string, situation: string, tone: string) {
     () => ({ text: MOCK_GHOST[tone] ?? MOCK_GHOST.honest }),
   );
 }
+
+// ---------- CEO lifestyle catalogue ----------
+
+const lifestyleSchema = {
+  type: "object",
+  properties: {
+    items: {
+      type: "array",
+      description:
+        "Exactly 5 things this particular CEO could buy right now. Make them personal and topical: riff on the product, the storylines, the cast, Zug, the office, what the CEO already owns. Mix price points: one cheap and silly, a couple mid-range, one outrageous. Satire of founder culture.",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Short, specific (max ~6 words)" },
+          emoji: { type: "string" },
+          cost: { type: "integer", description: "USD, 300..400000" },
+          upkeep: { type: "integer", description: "USD per quarter forever, 0 unless it's a lease/membership/staff" },
+          hype: { type: "integer", description: "One-off investor hype, 0..10, flashier = more" },
+          reputation: { type: "integer", description: "One-off CEO reputation, 0..8" },
+          morale: { type: "integer", description: "One-off team morale, -12..0: how much the team resents it" },
+          hype_per_quarter: { type: "integer", description: "0..3 while owned" },
+          morale_per_quarter: { type: "integer", description: "-3..0 while owned" },
+          reputation_per_quarter: { type: "integer", description: "0..2 while owned" },
+          extra_decision: { type: "boolean", description: "true only for something that genuinely buys the CEO time (jet, chief of staff, driver); must be expensive with upkeep" },
+          blurb: { type: "string", description: "One funny sentence shown in the shop" },
+          gossip: { type: "string", description: "How employees/journalists would describe it, lowercase noun phrase" },
+        },
+        required: ["name", "emoji", "cost", "upkeep", "hype", "reputation", "morale", "hype_per_quarter", "morale_per_quarter", "reputation_per_quarter", "extra_decision", "blurb", "gossip"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["items"],
+  additionalProperties: false,
+} as const;
+
+const LifestyleOffer = z.object({
+  items: z.array(
+    z.object({
+      name: z.string(),
+      emoji: z.string(),
+      cost: z.number(),
+      upkeep: z.number(),
+      hype: z.number(),
+      reputation: z.number(),
+      morale: z.number(),
+      hype_per_quarter: z.number(),
+      morale_per_quarter: z.number(),
+      reputation_per_quarter: z.number(),
+      extra_decision: z.boolean(),
+      blurb: z.string(),
+      gossip: z.string(),
+    }),
+  ),
+});
+
+/** Raw offers in the client's LifestyleItem shape; the client clamps every number. */
+export function generateLifestyle(context: string) {
+  const user = `The CEO opens their "lifestyle" app. What does it offer them this quarter?\n\nGame state:\n${context}`;
+  return withFallback(
+    async () => {
+      const o = LifestyleOffer.parse(await ask(WORLD, user, lifestyleSchema, 2000));
+      return {
+        items: o.items.slice(0, 5).map((x) => ({
+          name: x.name,
+          emoji: x.emoji,
+          cost: x.cost,
+          upkeep: x.upkeep,
+          hype: x.hype,
+          reputation: x.reputation,
+          morale: x.morale,
+          perQ: { hype: x.hype_per_quarter, morale: x.morale_per_quarter, reputation: x.reputation_per_quarter },
+          decisions: x.extra_decision ? 1 : 0,
+          blurb: x.blurb,
+          gossip: x.gossip,
+        })),
+      };
+    },
+    () => ({ items: [] }), // the client falls back to the built-in catalogue
+  );
+}
+
+// ---------- office shop specials ----------
+
+const perksSchema = {
+  type: "object",
+  properties: {
+    items: {
+      type: "array",
+      description:
+        "Exactly 4 office perks a vendor is pitching to this company this quarter. Specific to the product, office, team quirks, storylines and recent events; satirical startup culture. Mix: one cheap and silly, one per-head thing, one that looks great to investors but annoys staff, one that genuinely helps but costs upkeep.",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Short (max ~5 words)" },
+          emoji: { type: "string" },
+          cost: { type: "integer", description: "USD one-off; if per_head, USD per employee (100..3000), else 1000..150000" },
+          per_head: { type: "boolean" },
+          morale: { type: "integer", description: "-2..3 per quarter" },
+          hype: { type: "integer", description: "-1..4 per quarter" },
+          revenue: { type: "number", description: "Revenue multiplier delta, -0.05..0.04 (productivity)" },
+          upkeep: { type: "integer", description: "USD per quarter (per head if per_head)" },
+          blurb: { type: "string", description: "One funny sentence for the shop" },
+          gossip: { type: "string", description: "How staff describe it, lowercase noun phrase" },
+        },
+        required: ["name", "emoji", "cost", "per_head", "morale", "hype", "revenue", "upkeep", "blurb", "gossip"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["items"],
+  additionalProperties: false,
+} as const;
+
+const PerkOffer = z.object({
+  items: z.array(z.object({ name: z.string(), emoji: z.string(), cost: z.number(), per_head: z.boolean(), morale: z.number(), hype: z.number(), revenue: z.number(), upkeep: z.number(), blurb: z.string(), gossip: z.string() })),
+});
+
+/** Raw specials; the client clamps them. */
+export function generatePerks(context: string, remote: boolean) {
+  const user = `An office-perks vendor pitches this company.${remote ? " The company is fully remote: only things that work over Zoom or at people's homes." : ""}\n\nGame state:\n${context}`;
+  return withFallback(
+    async () => ({
+      items: PerkOffer.parse(await ask(WORLD, user, perksSchema, 1500)).items.slice(0, 4).map((x) => ({ ...x, perHead: x.per_head })),
+    }),
+    () => ({ items: [] }),
+  );
+}

@@ -23,7 +23,8 @@ Without a key the game still runs with a dumb heuristic "mock GM". Progress auto
 You start in your aunt's garage. You set your own salary — the board and the team compare it to
 the company's size every quarter. Garage → coworking → open space (+ east wing) → glass campus, or go remote-first and run the
 company as a Zoom grid. Hire beyond your desks and people hot-desk on beanbags (morale tanks).
-The office shop sells perks with trade-offs (climbing wall, beer fridge, AI receptionist, valuation
+The office shop sells perks with trade-offs, plus four LLM-invented "specials" per quarter tailored to
+your company (bought ones show up in the office as props) (climbing wall, beer fridge, AI receptionist, valuation
 LED wall...), all visible in the office and known to the LLM's office gossip. Perks cost upkeep
 every quarter, and the novelty wears off: after a few quarters nobody notices the upside (the
 downsides stay).
@@ -55,7 +56,8 @@ downsides stay).
 - **The board** meets every 4 quarters with a motion of its own: appoint a CFO who watches every
   payment, freeze your salary, cut staff, sell the perks, or a vote of no confidence. You argue, they
   vote, the engine enacts it. Every board seat you traded for money is a vote against you.
-- **Lifestyle**: a vest, a watch, a Lambo, a penthouse, an ayahuasca retreat. Pay from your own savings
+- **Lifestyle**: every quarter the LLM curates fresh, personal picks next to the classics (a vest, a Lambo,
+  a penthouse, a private jet that buys you an extra decision). Pay from your own savings
   (FIRE slips away) or put it on the company card (suspicion, someone in finance sees the receipt, and
   auditors who find it make you pay it back). Investors like a CEO who looks successful; the team doesn't.
 - **Media**: podcasts, a journalist who asks about whatever she's heard (Zug included), LinkedIn
