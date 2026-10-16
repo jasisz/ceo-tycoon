@@ -69,7 +69,11 @@ main { flex: 1; display: flex; min-height: 0; }
 .card .btns button.primary { background: var(--accent); color: #fff; border: none; }
 .choices { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
 .choice { text-align: left; display: flex; flex-direction: column; gap: 4px; }
-.choice:hover { border-color: var(--accent); background: #f0f3ff; }
+.choice:hover:not(:disabled) { border-color: var(--accent); background: #f0f3ff; }
+.choice:disabled { opacity: .5; cursor: not-allowed; }
+.choice small { color: var(--muted); font-size: 12px; }
+.choice .price { float: right; font-weight: 600; color: var(--accent); font-size: 13px; }
+#actions button small.free { font-size: 10px; color: var(--good); font-weight: 700; text-transform: uppercase; margin-left: 4px; }
 .narr { font-size: 15px; line-height: 1.45; }
 .quote { margin: 4px 0; padding-left: 10px; border-left: 3px solid var(--line); }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }

@@ -1,36 +1,15 @@
 // Isometric office drawn entirely with Phaser Graphics - no external assets.
-// The canvas renders at native device resolution; the camera zooms the fixed
-// world (WORLD_W x WORLD_H) to fit, so vector shapes stay crisp at any size.
+// The canvas renders at native device resolution; the camera zooms the world
+// to fit, so vector shapes stay crisp at any size. Each office tier has its own
+// layout (navigation data) and decoration; "remote" is drawn as a Zoom call.
 import Phaser from "phaser";
 import type { Employee } from "../game/state";
+import type { OfficeTier } from "../game/office";
 
 const TW = 64; // tile width
 const TH = 32; // tile height
-const GW = 14; // grid width (x)
-const GH = 10; // grid height (y)
 const WALL = 78;
-const OX = GH * (TW / 2) + 40;
-const OY = WALL + 50;
-const WORLD_W = (GW + GH) * (TW / 2) + 80;
-const WORLD_H = (GW + GH) * (TH / 2) + WALL + 90;
-
 const INK = 0x2b2d42; // cartoon outline colour
-
-// desk grid positions (index = desk slot)
-const DESKS: [number, number][] = [
-  [5, 2], [7, 2], [9, 2],
-  [5, 4], [7, 4], [9, 4],
-  [5, 6], [7, 6], [9, 6],
-  [5, 8], [7, 8], [9, 8],
-  [11.5, 6], [11.5, 8],
-];
-// vertical aisles between desk columns and the horizontal corridor above them
-const AISLES = [4.5, 6.55, 8.55, 10.75];
-const CORRIDOR_Y = 1.35;
-const CORRIDORS = [CORRIDOR_Y, 9.4];
-const COFFEE: [number, number] = [12.45, 1.3];
-const DOOR: [number, number] = [13.4, 9.5];
-const HANGOUTS: [number, number][] = [[11.6, 2.4], [12.6, 2.6], [2.2, 3.4], [3.3, 3.3], [7.5, 0.9], [3.6, 6.3], [1.2, 6.0]];
 
 const SHIRTS = [0xef476f, 0x118ab2, 0xffd166, 0x06d6a0, 0x8338ec, 0xff8c42, 0x3a86ff, 0xe63946, 0x2a9d8f, 0xf15bb5];
 const PANTS = [0x3d405b, 0x264653, 0x5c4d7d, 0x463f3a, 0x1d3557];
@@ -42,9 +21,45 @@ const LOW_EMOTES = ["💢", "😤", "🙄", "💀", "😩", "🫠"];
 const MID_EMOTES = ["☕", "🤔", "📊", "🫡", "💬"];
 const HIGH_EMOTES = ["✨", "🎉", "💪", "🚀", "😎"];
 
+type HairStyle = (typeof HAIRSTYLES)[number];
+type Accessory = (typeof ACCESSORIES)[number];
+
 interface Pt {
   x: number;
   y: number;
+}
+
+interface Rect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/** Navigation data for one office. All coordinates are grid units. */
+interface Layout {
+  GW: number;
+  GH: number;
+  desks: Pt[]; // desk origin; desk footprint is 1.1 x 0.6, seat in front
+  aisles: number[];
+  corridors: number[];
+  deskArea: Rect;
+  door: Pt;
+  coffee: Pt;
+  hangouts: Pt[];
+  gather: Rect;
+  investorSpots: Pt[];
+  overflow: Pt[]; // where hot-deskers hang out
+  ceo: Pt;
+  safe: Pt;
+  upgradeSlots: Pt[];
+}
+
+export interface OfficeView {
+  tier: OfficeTier;
+  floors: number;
+  upgrades: string[];
+  headcount: number;
 }
 
 interface Person {
@@ -55,13 +70,13 @@ interface Person {
   legR: Phaser.GameObjects.Graphics;
   face: Phaser.GameObjects.Graphics;
   eyes: Phaser.GameObjects.Graphics;
-  skin: number;
   g: Pt;
   walking: boolean;
   seated: boolean;
   phase: number;
   timer?: Phaser.Time.TimerEvent;
   lastMood: number;
+  camOff?: Phaser.GameObjects.Container; // remote only
 }
 
 interface Bubble {
@@ -70,22 +85,137 @@ interface Bubble {
   offset: number;
 }
 
+interface Dog {
+  c: Phaser.GameObjects.Container;
+  body: Phaser.GameObjects.Container;
+  g: Pt;
+  walking: boolean;
+}
+
 export interface OfficeCallbacks {
   onEmployeeClick: (id: number) => void;
   onCeoClick: () => void;
   getMood: (id: number) => number;
+  getValuation: () => string;
   onReady: (scene: OfficeScene) => void;
+}
+
+// ---------- layouts ----------
+
+const range = (from: number, n: number, step: number) => Array.from({ length: n }, (_, i) => from + i * step);
+const grid = (xs: number[], ys: number[]): Pt[] => ys.flatMap((y) => xs.map((x) => ({ x, y })));
+
+function layoutFor(tier: OfficeTier, floors: number): Layout {
+  switch (tier) {
+    case "garage":
+      return {
+        GW: 9,
+        GH: 7,
+        desks: grid([2.2, 4.2], [2, 4.2]),
+        aisles: [1.6, 3.75, 5.8],
+        corridors: [1.2, 5.9],
+        deskArea: { x0: 1.9, x1: 5.6, y0: 1.8, y1: 5.3 },
+        door: { x: 8.4, y: 6.5 },
+        coffee: { x: 7.2, y: 1.3 },
+        hangouts: [{ x: 7.6, y: 1.6 }, { x: 6.6, y: 1.5 }, { x: 1.0, y: 6.2 }, { x: 4.8, y: 6.3 }],
+        gather: { x0: 1.2, y0: 5.6, x1: 5.8, y1: 6.6 },
+        investorSpots: [{ x: 2.0, y: 6.3 }, { x: 3.0, y: 6.5 }, { x: 4.0, y: 6.3 }],
+        overflow: [{ x: 1.0, y: 1.0 }, { x: 1.4, y: 0.9 }, { x: 0.9, y: 3.6 }, { x: 0.9, y: 4.9 }, { x: 6.2, y: 5.8 }, { x: 5.6, y: 1.2 }],
+        ceo: { x: 7.5, y: 5.4 },
+        safe: { x: 8.25, y: 4.3 },
+        upgradeSlots: [{ x: 0.3, y: 5.6 }, { x: 5.9, y: 6.4 }],
+      };
+    case "cowork":
+      return {
+        GW: 12,
+        GH: 8,
+        desks: grid([3.5, 5.5, 7.5, 9.5], [2, 4]),
+        aisles: [3.0, 5.05, 7.05, 9.05, 10.9],
+        corridors: [1.2, 7.3],
+        deskArea: { x0: 3.2, x1: 10.8, y0: 1.8, y1: 6.9 },
+        door: { x: 11.5, y: 7.5 },
+        coffee: { x: 10.9, y: 1.4 },
+        hangouts: [{ x: 10.4, y: 1.5 }, { x: 11.3, y: 1.7 }, { x: 1.5, y: 3.3 }, { x: 2.4, y: 4.6 }, { x: 11.1, y: 4.6 }],
+        gather: { x0: 3.2, y0: 7.0, x1: 10.2, y1: 7.7 },
+        investorSpots: [{ x: 0.8, y: 0.9 }, { x: 1.7, y: 0.8 }, { x: 2.2, y: 1.7 }],
+        overflow: [{ x: 1.6, y: 3.2 }, { x: 2.4, y: 3.6 }, { x: 11.2, y: 3.4 }, { x: 11.3, y: 5.4 }, { x: 2.5, y: 5.3 }, { x: 11.0, y: 6.6 }],
+        ceo: { x: 1.6, y: 6.9 },
+        safe: { x: 0.3, y: 7.1 },
+        upgradeSlots: [{ x: 11.3, y: 2.6 }, { x: 0.3, y: 3.0 }, { x: 11.3, y: 6.1 }],
+      };
+    case "campus":
+      return {
+        GW: 22,
+        GH: 14,
+        desks: grid(range(6, 8, 2), [4, 6, 8, 10]),
+        aisles: [5.5, 7.55, 9.55, 11.55, 13.55, 15.55, 17.55, 19.55, 21.5],
+        corridors: [2.9, 11.8],
+        deskArea: { x0: 5.4, x1: 21.6, y0: 3.4, y1: 11.2 },
+        door: { x: 21.5, y: 13.5 },
+        coffee: { x: 19.2, y: 1.6 },
+        hangouts: [{ x: 16, y: 1.7 }, { x: 17.5, y: 1.9 }, { x: 19.5, y: 1.8 }, { x: 8.5, y: 2.2 }, { x: 11, y: 2.4 }, { x: 3.5, y: 6.2 }],
+        gather: { x0: 1.0, y0: 5.4, x1: 4.6, y1: 8.8 },
+        investorSpots: [{ x: 1.2, y: 1.3 }, { x: 2.4, y: 1.1 }, { x: 3.6, y: 1.6 }],
+        overflow: [{ x: 6, y: 12.6 }, { x: 9, y: 12.7 }, { x: 12, y: 12.5 }, { x: 15, y: 12.7 }, { x: 18, y: 12.6 }, { x: 8, y: 2.0 }],
+        ceo: { x: 3.2, y: 12.6 },
+        safe: { x: 0.35, y: 12.9 },
+        upgradeSlots: [...range(6.4, 8, 2).map((x) => ({ x, y: 13.1 })), { x: 20.6, y: 1.5 }, { x: 13.4, y: 2.0 }],
+      };
+    case "openspace":
+    default: {
+      const wing = floors > 0;
+      const GW = wing ? 20 : 14;
+      const desks = [
+        ...grid([5, 7, 9], [2, 4, 6, 8]),
+        { x: 11.5, y: 6 },
+        { x: 11.5, y: 8 },
+        ...(wing ? [...grid([14.6, 16.6], [2, 4, 6, 8]), { x: 18.5, y: 4 }, { x: 18.5, y: 6 }] : []),
+      ];
+      return {
+        GW,
+        GH: 10,
+        desks,
+        aisles: [4.5, 6.55, 8.55, 10.75, ...(wing ? [13.9, 16.15, 18.1, 19.75] : [])],
+        corridors: [1.35, 9.4],
+        deskArea: { x0: 4.3, x1: wing ? 19.8 : 12.8, y0: 1.7, y1: 9.1 },
+        door: { x: GW - 0.6, y: 9.5 },
+        coffee: { x: 12.45, y: 1.3 },
+        hangouts: [{ x: 11.6, y: 2.4 }, { x: 12.6, y: 2.6 }, { x: 2.2, y: 3.4 }, { x: 3.3, y: 3.3 }, { x: 7.5, y: 0.9 }, { x: 3.6, y: 6.3 }, { x: 1.2, y: 6.0 }],
+        gather: { x0: 0.6, y0: 0.5, x1: 3.6, y1: 3.7 },
+        investorSpots: [{ x: 1.3, y: 0.8 }, { x: 2.3, y: 0.7 }, { x: 3.3, y: 1.2 }],
+        overflow: [{ x: 3.2, y: 4.5 }, { x: 3.4, y: 5.4 }, { x: 0.8, y: 4.4 }, { x: 13.3, y: 2.6 }, { x: 12.4, y: 9.5 }, { x: 4.6, y: 9.5 }],
+        ceo: { x: 2.1, y: 8.6 },
+        safe: { x: 0.25, y: 8.9 },
+        upgradeSlots: [{ x: 5.0, y: 0.25 }, { x: 6.3, y: 0.25 }, { x: 7.6, y: 0.25 }, { x: 9.0, y: 0.25 }, { x: 13.2, y: 5.6 }, { x: 13.2, y: 7.3 }],
+      };
+    }
+  }
 }
 
 export class OfficeScene extends Phaser.Scene {
   private people = new Map<number, Person>();
+  private visitors: Person[] = [];
   private bubbles: Bubble[] = [];
+  private dogs: Dog[] = [];
   private cb!: OfficeCallbacks;
   private tooltip!: Phaser.GameObjects.Text;
   private ceo!: Phaser.GameObjects.Container;
-  private dog!: { c: Phaser.GameObjects.Container; g: Pt; walking: boolean };
-  private visitors: Person[] = [];
   private res = 1;
+  private L!: Layout;
+  private view: OfficeView = { tier: "openspace", floors: 0, upgrades: [], headcount: 0 };
+  private viewKey = "";
+  private remote = false;
+  private worldW = 0;
+  private worldH = 0;
+  private ox = 0;
+  private oy = 0;
+  private spawnSeated = false;
+  private safe?: Phaser.GameObjects.Container;
+  private safeAmount = -1;
+  private ledText?: Phaser.GameObjects.Text;
+  private tiles: Pt[] = []; // remote: tile centres
+  private tileW = 150;
+  private tileH = 112;
 
   constructor() {
     super("office");
@@ -95,19 +225,49 @@ export class OfficeScene extends Phaser.Scene {
     this.cb = data.cb;
   }
 
-  iso(gx: number, gy: number): Pt {
-    return { x: OX + (gx - gy) * (TW / 2), y: OY + (gx + gy) * (TH / 2) };
-  }
-
-  /** Crisp text: rasterised at the camera's zoom. */
-  private txt(x: number, y: number, s: string, style: Phaser.Types.GameObjects.Text.TextStyle) {
-    return this.add.text(x, y, s, { resolution: this.res, ...style });
-  }
-
   create() {
-    this.fitCamera();
     this.scale.on("resize", () => this.fitCamera());
-    this.drawRoom();
+    this.build();
+    this.cb.onReady(this);
+  }
+
+  // ---------- world (re)building ----------
+
+  /** Switch office tier / floors / upgrades. Rebuilds the scene when anything visible changes. */
+  setView(v: OfficeView) {
+    const key = `${v.tier}|${v.floors}|${v.upgrades.join(",")}|${v.tier === "remote" ? v.headcount : ""}`;
+    this.view = v;
+    if (key === this.viewKey) return;
+    this.viewKey = key;
+    this.build();
+  }
+
+  private build() {
+    this.tweens.killAll();
+    this.time.removeAllEvents();
+    this.children.list.slice().forEach((o) => o.destroy());
+    this.people.clear();
+    this.visitors = [];
+    this.bubbles = [];
+    this.dogs = [];
+    this.safe = undefined;
+    this.ledText = undefined;
+    this.safeAmount = -1;
+    this.spawnSeated = true;
+
+    this.remote = this.view.tier === "remote";
+    this.L = layoutFor(this.view.tier, this.view.floors);
+    if (this.remote) {
+      this.computeTiles(this.view.headcount + 5);
+    } else {
+      const { GW, GH } = this.L;
+      this.ox = GH * (TW / 2) + 40;
+      this.oy = WALL + 50;
+      this.worldW = (GW + GH) * (TW / 2) + 80;
+      this.worldH = (GW + GH) * (TH / 2) + WALL + 90;
+    }
+    this.fitCamera();
+
     this.tooltip = this.txt(0, 0, "", {
       fontFamily: "system-ui, sans-serif",
       fontSize: "12px",
@@ -117,48 +277,41 @@ export class OfficeScene extends Phaser.Scene {
     })
       .setDepth(60_000)
       .setVisible(false);
-    this.spawnDog();
+
+    if (this.remote) this.drawZoom();
+    else {
+      this.drawOffice();
+      this.time.addEvent({ delay: 900, loop: true, callback: () => this.coffeeSteam() });
+    }
     this.time.addEvent({ delay: 2600, loop: true, callback: () => this.randomEmote() });
-    this.time.addEvent({ delay: 900, loop: true, callback: () => this.coffeeSteam() });
-    this.cb.onReady(this);
   }
 
   private fitCamera() {
     const cam = this.cameras.main;
-    const zoom = Math.min(this.scale.width / WORLD_W, this.scale.height / WORLD_H);
+    const zoom = Math.min(this.scale.width / this.worldW, this.scale.height / this.worldH);
     cam.setZoom(zoom);
-    cam.centerOn(WORLD_W / 2, WORLD_H / 2 - 10);
+    cam.centerOn(this.worldW / 2, this.worldH / 2 - (this.remote ? 0 : 10));
     this.res = Math.max(1, Math.ceil(zoom * 2) / 2);
+  }
+
+  iso(gx: number, gy: number): Pt {
+    return { x: this.ox + (gx - gy) * (TW / 2), y: this.oy + (gx + gy) * (TH / 2) };
+  }
+
+  /** Crisp text: rasterised at the camera's zoom. */
+  private txt(x: number, y: number, s: string, style: Phaser.Types.GameObjects.Text.TextStyle) {
+    return this.add.text(x, y, s, { resolution: this.res, ...style });
+  }
+
+  private has(upgrade: string) {
+    return this.view.upgrades.includes(upgrade);
   }
 
   update(time: number) {
     for (const p of this.people.values()) this.animatePerson(p, time);
     for (const p of this.visitors) this.animatePerson(p, time);
-    if (this.dog?.walking) {
-      const s = Math.sin(time / 60);
-      (this.dog.c.getAt(1) as Phaser.GameObjects.Container).y = Math.abs(s) * -2;
-    }
+    for (const d of this.dogs) if (d.walking) d.body.y = Math.abs(Math.sin(time / 60)) * -2;
     this.layoutBubbles();
-  }
-
-  /** Follow speakers and push overlapping bubbles upward so they never cover each other. */
-  private layoutBubbles() {
-    const placed: Phaser.Geom.Rectangle[] = [];
-    for (const b of this.bubbles) {
-      const bounds = b.box.getBounds();
-      const w = bounds.width / b.box.scaleX || bounds.width;
-      const h = bounds.height / b.box.scaleY || bounds.height;
-      let y = b.target.y - b.offset;
-      const x = b.target.x;
-      for (let guard = 0; guard < 8; guard++) {
-        const r = new Phaser.Geom.Rectangle(x - w / 2, y - h, w, h);
-        const hit = placed.find((o) => Phaser.Geom.Intersects.RectangleToRectangle(o, r));
-        if (!hit) break;
-        y = hit.y - 4;
-      }
-      b.box.setPosition(x, y);
-      placed.push(new Phaser.Geom.Rectangle(x - w / 2, y - h, w, h));
-    }
   }
 
   // ---------- drawing helpers ----------
@@ -168,10 +321,10 @@ export class OfficeScene extends Phaser.Scene {
     if (outline) g.lineStyle(1.5, INK, 0.9).strokePoints(pts, true, true);
   }
 
-  private tile(g: Phaser.GameObjects.Graphics, gx: number, gy: number, color: number) {
+  private tile(g: Phaser.GameObjects.Graphics, gx: number, gy: number, color: number, grout = 0xffffff) {
     const pts = [this.iso(gx, gy), this.iso(gx + 1, gy), this.iso(gx + 1, gy + 1), this.iso(gx, gy + 1)];
     g.fillStyle(color, 1).fillPoints(pts, true);
-    g.lineStyle(1, 0xffffff, 0.35).strokePoints(pts, true, true);
+    g.lineStyle(1, grout, 0.35).strokePoints(pts, true, true);
   }
 
   private shade(c: number, f: number) {
@@ -211,6 +364,11 @@ export class OfficeScene extends Phaser.Scene {
     this.txt(p.x, p.y, text, { fontFamily: "system-ui, sans-serif", fontSize: "9px", color: "#2b2d4266", fontStyle: "bold" }).setOrigin(0.5).setDepth(1);
   }
 
+  private emojiAt(gx: number, gy: number, z: number, e: string, size = 12, depthBoost = 1) {
+    const p = this.iso(gx, gy);
+    return this.txt(p.x, p.y - z, e, { fontSize: `${size}px` }).setOrigin(0.5).setDepth(p.y + depthBoost);
+  }
+
   private plant(gx: number, gy: number, kind: "bush" | "tall" | "cactus") {
     this.box(gx, gy, 0.36, 0.36, 12, 0xd17a4a);
     const p = this.iso(gx + 0.18, gy + 0.18);
@@ -226,174 +384,494 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
-  private drawRoom() {
-    const g = this.add.graphics().setDepth(0);
-    for (let x = 0; x < GW; x++)
-      for (let y = 0; y < GH; y++) {
-        const odd = (x + y) % 2 === 1;
-        let col = odd ? 0xc5cee0 : 0xd0d8e8; // open space carpet
-        if (x < 4 && y < 4) col = odd ? 0x9fd8b5 : 0xb0e0c2; // meeting room
-        if (x < 4 && y >= 6) col = odd ? 0xc08b5c : 0xcc9a6c; // CEO office parquet
-        if (x >= 11 && y < 4) col = odd ? 0xffe8b8 : 0xfff1d0; // kitchen
-        if (x < 4 && y >= 4 && y < 6) col = odd ? 0xf6bd60 : 0xf7c873; // "chill zone"
-        this.tile(g, x, y, col);
-      }
-    // floor outline
-    g.lineStyle(2, INK, 0.9).strokePoints([this.iso(0, 0), this.iso(GW, 0), this.iso(GW, GH), this.iso(0, GH)], true, true);
+  private beanbag(gx: number, gy: number, c: number) {
+    const p = this.iso(gx, gy);
+    this.add.ellipse(p.x, p.y - 6, 30, 20, c).setStrokeStyle(1.5, INK, 0.9).setDepth(p.y);
+  }
 
-    // walls
+  private chair(gx: number, gy: number, color: number) {
+    const ergo = this.has("chairs");
+    const p = this.iso(gx, gy);
+    const g = this.add.graphics().setDepth(p.y + 0.4);
+    const c = ergo ? 0x2b2d42 : color;
+    g.lineStyle(2, INK, 0.9);
+    for (const a of [0, 1.26, 2.51, 3.77, 5.03]) g.lineBetween(p.x, p.y - 2, p.x + Math.cos(a) * 9, p.y - 2 + Math.sin(a) * 4);
+    g.lineBetween(p.x, p.y - 2, p.x, p.y - 9);
+    const backH = ergo ? 28 : 20;
+    g.fillStyle(this.shade(c, 0.8)).fillRoundedRect(p.x - 9, p.y - 14 - backH, 18, backH, 6).lineStyle(1.5, INK).strokeRoundedRect(p.x - 9, p.y - 14 - backH, 18, backH, 6);
+    if (ergo) g.fillStyle(0x06d6a0).fillRoundedRect(p.x - 6, p.y - 40, 12, 4, 2); // lumbar support, very expensive
+    g.fillStyle(c).fillEllipse(p.x, p.y - 11, 22, 9).strokeEllipse(p.x, p.y - 11, 22, 9);
+  }
+
+  private desk(x: number, y: number, i: number, style: "folding" | "normal" | "glass") {
+    const screens = [0x3a86ff, 0x06d6a0, 0x8338ec, 0xff006e, 0x2b2d42];
+    this.chair(x + 0.55, y + 0.95, [0xef476f, 0x118ab2, 0x06d6a0, 0x8338ec][i % 4]);
+    const top = style === "folding" ? 0xd9c7a7 : style === "glass" ? 0xe0fbfc : 0xffffff;
+    this.box(x, y, 1.1, 0.6, style === "folding" ? 14 : 16, top);
+    const z = style === "folding" ? 14 : 16;
+    const mon = style === "folding" ? this.box(x + 0.4, y + 0.15, 0.35, 0.05, 9, 0x6c757d, z) : this.box(x + 0.35, y + 0.05, 0.42, 0.08, 16, screens[i % screens.length], z);
+    mon.setDepth(this.iso(x + 0.55, y + 0.3).y + 0.5);
+    const clutter = ["☕", "🦆", "🧃", "📎", "🪴", "🍕"][i % 6];
+    const tp = this.iso(x + 0.95, y + 0.4);
+    this.txt(tp.x, tp.y - z - 4, clutter, { fontSize: "10px" }).setOrigin(0.5).setDepth(this.iso(x + 0.55, y + 0.3).y + 0.6);
+  }
+
+  private floor(color: (x: number, y: number) => number, grout = 0xffffff) {
+    const { GW, GH } = this.L;
+    const g = this.add.graphics().setDepth(0);
+    for (let x = 0; x < GW; x++) for (let y = 0; y < GH; y++) this.tile(g, x, y, color(x, y), grout);
+    g.lineStyle(2, INK, 0.9).strokePoints([this.iso(0, 0), this.iso(GW, 0), this.iso(GW, GH), this.iso(0, GH)], true, true);
+  }
+
+  private walls(left: number, back: number, trim: number) {
+    const { GW, GH } = this.L;
     const w = this.add.graphics().setDepth(0);
-    this.wallPoly(w, this.iso(0, 0), this.iso(0, GH), 0, WALL, 0xb8c0ff);
-    this.wallPoly(w, this.iso(0, 0), this.iso(GW, 0), 0, WALL, 0xc8d0ff);
-    this.wallPoly(w, this.iso(0, 0), this.iso(0, GH), WALL - 6, WALL, 0x8e94f2); // trim
-    this.wallPoly(w, this.iso(0, 0), this.iso(GW, 0), WALL - 6, WALL, 0x9fa6f5);
-    // windows with a skyline
-    for (const i of [5, 8.2]) {
-      this.wallPoly(w, this.iso(i, 0), this.iso(i + 2.2, 0), 22, 62, 0xa2d2ff);
-      for (let k = 0; k < 5; k++) {
+    this.wallPoly(w, this.iso(0, 0), this.iso(0, GH), 0, WALL, left);
+    this.wallPoly(w, this.iso(0, 0), this.iso(GW, 0), 0, WALL, back);
+    this.wallPoly(w, this.iso(0, 0), this.iso(0, GH), WALL - 6, WALL, trim);
+    this.wallPoly(w, this.iso(0, 0), this.iso(GW, 0), WALL - 6, WALL, this.shade(trim, 1.08));
+    return w;
+  }
+
+  private windows(w: Phaser.GameObjects.Graphics, xs: number[], width = 2.2) {
+    for (const i of xs) {
+      this.wallPoly(w, this.iso(i, 0), this.iso(i + width, 0), 22, 62, 0xa2d2ff);
+      for (let k = 0; k < Math.floor(width * 2.2); k++) {
         const a = this.iso(i + 0.2 + k * 0.42, 0);
         const bh = 10 + ((k * 37 + i * 11) % 22);
         w.fillStyle(0x7b8cde, 0.55).fillRect(a.x - 4, a.y - 22 - bh, 7, bh);
       }
     }
-    // posters
+  }
+
+  private glassPane(x1: number, y1: number, x2: number, y2: number) {
+    const glass = this.add.graphics().setDepth(2);
+    const a = this.iso(x1, y1), b = this.iso(x2, y2);
+    glass.fillStyle(0xdff6ff, 0.18).fillPoints([a, b, { x: b.x, y: b.y - 34 }, { x: a.x, y: a.y - 34 }], true);
+    glass.lineStyle(1.5, INK, 0.5).lineBetween(a.x, a.y - 34, b.x, b.y - 34);
+  }
+
+  // ---------- offices ----------
+
+  private drawOffice() {
+    switch (this.view.tier) {
+      case "garage":
+        this.drawGarage();
+        break;
+      case "cowork":
+        this.drawCowork();
+        break;
+      case "campus":
+        this.drawCampus();
+        break;
+      default:
+        this.drawOpenspace();
+    }
+    this.L.desks.forEach((d, i) => this.desk(d.x, d.y, i, this.view.tier === "garage" ? "folding" : this.view.tier === "campus" ? "glass" : "normal"));
+    this.drawUpgrades();
+    this.spawnCeo();
+    this.spawnDog(0xc68642, "Biscuit · Chief Happiness Officer (has more equity than you)");
+    if (this.has("dog2")) this.spawnDog(0x2b2d42, "Pixel · Deputy Happiness Officer (reports to Biscuit)");
+    this.setOffshore(0);
+  }
+
+  private drawGarage() {
+    this.floor((x, y) => ((x + y) % 2 ? 0xb5b5b5 : 0xbdbdbd), 0x999999);
+    const w = this.walls(0xd6ccc2, 0xe3d5ca, 0x8d7b68);
+    // roll-up garage door on the back wall
+    this.wallPoly(w, this.iso(2.6, 0), this.iso(6.2, 0), 0, 64, 0xadb5bd);
+    for (let z = 6; z < 64; z += 7) {
+      const a = this.iso(2.6, 0), b = this.iso(6.2, 0);
+      w.lineStyle(1, INK, 0.4).lineBetween(a.x, a.y - z, b.x, b.y - z);
+    }
+    // pegboard with tools
+    this.wallPoly(w, this.iso(0, 1.2), this.iso(0, 3.6), 20, 60, 0xc9a66b);
+    this.wallText("left", 2.4, 40, "🔧 🔨 🪛 🪚", "#000", 11);
+    this.wallText("left", 5.3, 44, "DREAM BIG", "#ef476f", 14).setShadow(1, 1, "#000", 0, false, true);
+    this.wallText("back", 7.6, 52, "est. last tuesday", "#2b2d42", 7);
+    // single bare light bulb
+    const bulb = this.iso(4.5, 3.5);
+    this.add.graphics().setDepth(40_000).lineStyle(1, INK, 0.8).lineBetween(bulb.x, 20, bulb.x, bulb.y - 150);
+    this.add.circle(bulb.x, bulb.y - 146, 6, 0xfff3b0).setStrokeStyle(1.5, INK).setDepth(40_000);
+    // mattress, car under a tarp, workbench with the coffee maker, paint buckets
+    this.box(0.3, 0.3, 1.6, 1.0, 6, 0xf1faee);
+    this.emojiAt(0.6, 0.6, 12, "😴", 11);
+    this.box(6.3, 2.4, 2.3, 1.4, 26, 0x5c7aa6);
+    this.emojiAt(7.4, 3.1, 40, "🚗", 12, 2);
+    this.box(6.2, 0.1, 2.6, 0.7, 22, 0x8d6e63);
+    this.box(7.0, 0.2, 0.4, 0.35, 16, 0x343a40, 22);
+    this.box(0.3, 4.3, 0.4, 0.4, 12, 0x4cc9f0);
+    this.box(0.3, 4.8, 0.4, 0.4, 12, 0xffd166);
+    // extension cord running everywhere
+    const cord = this.add.graphics().setDepth(1);
+    cord.lineStyle(2, 0xff8c42, 0.9).strokePoints([this.iso(0, 6.5), this.iso(1.5, 5.6), this.iso(2.6, 5.9), this.iso(3.4, 4.9), this.iso(4.6, 5.4), this.iso(5.2, 3.0)], false, false);
+    // CEO "office": a camping chair next to a cardboard box
+    this.box(6.9, 4.7, 0.6, 0.5, 12, 0xc8a27c);
+    this.emojiAt(7.2, 4.95, 18, "📦", 11, 2);
+    this.label(4.5, 6.75, "THE GARAGE");
+  }
+
+  private drawCowork() {
+    const { GW, GH } = this.L;
+    this.floor((x, y) => {
+      if (x < 2.6 && y < 2.6) return (x + y) % 2 ? 0x9fd8b5 : 0xb0e0c2;
+      if (x >= 10 && y < 2.6) return (x + y) % 2 ? 0xffe8b8 : 0xfff1d0;
+      return (x + y) % 2 ? 0xc69c72 : 0xd2a984; // wooden floor
+    }, 0x8d6e63);
+    const w = this.walls(0x84a59d, 0x9ec1a3, 0x52796f);
+    this.windows(w, [3.4, 6.6], 2.2);
+    this.wallText("back", 2.2, 46, "good vibes only", "#ff4fd8", 10).setShadow(0, 0, "#ff4fd8", 8, false, true);
+    this.wallPoly(w, this.iso(0, 3.5), this.iso(0, 5.5), 24, 60, 0xffffff);
+    this.wallText("left", 4.5, 47, "WEEKLY", "#2b2d42", 8);
+    this.wallText("left", 4.5, 37, "KOMBUCHA", "#06d6a0", 9);
+    this.wallText("left", 4.5, 28, "SOCIAL 🍹", "#2b2d42", 8);
+    // meeting booth, phone booth, kombucha bar
+    this.glassPane(2.6, 0, 2.6, 2.6);
+    this.glassPane(0, 2.6, 2.6, 2.6);
+    this.box(0.6, 1.0, 1.5, 0.8, 13, 0xf4f1de);
+    this.box(0.3, 4.2, 0.9, 0.9, 52, 0x3a86ff);
+    this.emojiAt(0.75, 5.1, 30, "📞", 11, 2);
+    this.box(10.1, 0.1, 1.8, 0.7, 24, 0x6f4518);
+    this.box(10.9, 0.2, 0.35, 0.35, 18, 0xffd166, 24);
+    this.emojiAt(10.4, 0.45, 36, "🫖", 11, 2);
+    this.beanbag(1.8, 3.6, 0xef476f);
+    this.beanbag(2.3, 4.6, 0xffd166);
+    this.plant(11.4, 3.8, "tall");
+    this.plant(2.4, 0.2, "cactus");
+    // strangers from other startups on the remaining hot desks
+    [{ x: 5.5, y: 6 }, { x: 7.5, y: 6 }].forEach((d, i) => {
+      this.desk(d.x, d.y, i + 3, "normal");
+      const f = this.makeFigure({ shirt: [0xf8f9fa, 0x000000][i], pants: 0x343a40, skin: SKIN[i + 1], hair: HAIR[i * 3], style: (["mohawk", "bun"] as const)[i], acc: (["headphones", "glasses"] as const)[i] });
+      this.drawMouth(f.face, 70);
+      const p = this.iso(d.x + 0.55, d.y + 0.95);
+      f.c.setPosition(p.x, p.y).setDepth(p.y + 0.8);
+      f.body.y = 4;
+      f.body.scaleX = -1;
+      f.c.setInteractive(new Phaser.Geom.Rectangle(-14, -56, 28, 58), Phaser.Geom.Rectangle.Contains);
+      const tip = ["Not your employee. Works on a Web3 dating app. Says 'gm' to everyone.", "Not your employee. 'Building in stealth' for 4 years."][i];
+      f.c.on("pointerover", () => this.showTip(f.c, tip));
+      f.c.on("pointerout", () => this.hideTip());
+      this.time.addEvent({ delay: 9000 + i * 4000, loop: true, callback: () => f.c.active && this.emote(f.c, ["🦄", "🧘", "📈", "gm"][Math.floor(Math.random() * 4)]) });
+    });
+    // standing desk for the CEO (no private office here)
+    this.box(0.8, 6.0, 1.4, 0.6, 26, 0xffffff);
+    this.label(1.3, 0.25, "BOOTH");
+    this.label(GW - 1, 2.85, "KOMBUCHA BAR");
+    this.label(6.5, GH - 0.3, "EVENT SPACE");
+  }
+
+  private drawOpenspace() {
+    const wing = this.view.floors > 0;
+    this.floor((x, y) => {
+      const odd = (x + y) % 2 === 1;
+      if (x < 4 && y < 4) return odd ? 0x9fd8b5 : 0xb0e0c2;
+      if (x < 4 && y >= 6) return odd ? 0xc08b5c : 0xcc9a6c;
+      if (x >= 11 && x < 14 && y < 4) return odd ? 0xffe8b8 : 0xfff1d0;
+      if (x < 4 && y >= 4 && y < 6) return odd ? 0xf6bd60 : 0xf7c873;
+      if (x >= 14) return odd ? 0xbcd4e6 : 0xc8deee; // east wing
+      return odd ? 0xc5cee0 : 0xd0d8e8;
+    });
+    const w = this.walls(0xb8c0ff, 0xc8d0ff, 0x8e94f2);
+    this.windows(w, wing ? [5, 8.2, 15, 17.4] : [5, 8.2]);
     this.wallPoly(w, this.iso(0, 6.4), this.iso(0, 8.4), 22, 60, 0xffd166);
     this.wallText("left", 7.4, 41, "HUSTLE", "#2b2d42", 13);
     this.wallPoly(w, this.iso(0, 4.3), this.iso(0, 5.8), 26, 58, 0xffffff);
     this.wallText("left", 5.05, 48, "LIVE LAUGH", "#ef476f", 8);
     this.wallText("left", 5.05, 37, "LEVERAGE", "#ef476f", 9);
-    this.wallPoly(w, this.iso(0, 1.0), this.iso(0, 3.2), 18, 60, 0xffffff); // whiteboard
+    this.wallPoly(w, this.iso(0, 1.0), this.iso(0, 3.2), 18, 60, 0xffffff);
     const wb = [0.15, 0.35, 0.5, 0.7, 0.9].map((f, i) => {
       const q = this.iso(0, 1.3 + f * 1.6);
       return { x: q.x, y: q.y - [24, 30, 27, 38, 52][i] };
     });
     w.lineStyle(2, 0x06d6a0).strokePoints(wb, false, false);
     this.wallText("left", 2.1, 54, "Q4: 📈 TO THE MOON", "#118ab2", 7);
-    // neon sign on back wall
     this.wallText("back", 2.6, 46, "move fast & break payroll", "#ff4fd8", 10).setShadow(0, 0, "#ff4fd8", 8, false, true);
-    this.wallPoly(w, this.iso(11.2, 0), this.iso(12.4, 0), 30, 54, 0xffffff); // "employee of the month"
+    this.wallPoly(w, this.iso(11.2, 0), this.iso(12.4, 0), 30, 54, 0xffffff);
     this.wallText("back", 11.8, 47, "EMPLOYEE OF", "#2b2d42", 6);
     this.wallText("back", 11.8, 40, "THE MONTH:", "#2b2d42", 6);
     this.wallText("back", 11.8, 33, "the CEO", "#e63946", 7);
+    if (wing) this.wallText("back", 16.5, 70, "EAST WING", "#2b2d42", 12);
 
     this.label(2, 0.35, "MEETING ROOM");
     this.label(12.5, 3.75, "KITCHEN");
     this.label(2, 9.65, "CEO OFFICE");
     this.label(7, 9.8, "OPEN SPACE");
     this.label(2, 5.85, "CHILL ZONE");
+    if (wing) this.label(16.5, 9.8, "EAST WING (+1 floor)");
 
-    // glass partitions
-    const glass = this.add.graphics().setDepth(2);
-    const pane = (x1: number, y1: number, x2: number, y2: number) => {
-      const a = this.iso(x1, y1), b = this.iso(x2, y2);
-      glass.fillStyle(0xdff6ff, 0.18).fillPoints([a, b, { x: b.x, y: b.y - 34 }, { x: a.x, y: a.y - 34 }], true);
-      glass.lineStyle(1.5, INK, 0.5).lineBetween(a.x, a.y - 34, b.x, b.y - 34);
-    };
-    pane(4, 0, 4, 2.6); pane(0, 4, 2.8, 4);
-    pane(4, 6, 4, 6.8); pane(4, 8.2, 4, 10); pane(0, 6, 2.8, 6);
+    this.glassPane(4, 0, 4, 2.6); this.glassPane(0, 4, 2.8, 4);
+    this.glassPane(4, 6, 4, 6.8); this.glassPane(4, 8.2, 4, 10); this.glassPane(0, 6, 2.8, 6);
+    if (wing) { this.glassPane(14, 0, 14, 1.0); this.glassPane(14, 9.0, 14, 10); }
 
-    // meeting table
     this.box(1, 1.3, 2, 1.3, 14, 0xf4f1de);
-    // kitchen counter, coffee machine, fridge, water cooler
     this.box(11, 0.1, 2.1, 0.75, 24, 0xe9edc9);
-    this.box(12.2, 0.2, 0.5, 0.45, 22, 0x3d405b, 24);
+    this.box(12.2, 0.2, 0.5, 0.45, 22, this.has("espresso") ? 0xffd166 : 0x3d405b, 24);
     this.box(13.2, 0.15, 0.7, 0.75, 64, 0xf8f9fa);
     const cooler = this.iso(10.6, 0.5);
     this.box(10.4, 0.3, 0.4, 0.4, 26, 0xdee2e6);
     this.add.ellipse(cooler.x, cooler.y - 34, 14, 18, 0x9bf6ff, 0.85).setStrokeStyle(1.5, INK, 0.8).setDepth(cooler.y + 1);
-    // ping-pong table (with net) in the chill zone
     this.box(1, 4.4, 1.8, 1, 12, 0x2a9d8f);
     const n1 = this.iso(1.9, 4.4), n2 = this.iso(1.9, 5.4);
     this.add.graphics().setDepth(this.iso(1.9, 4.9).y + 1).lineStyle(2, 0xffffff).lineBetween(n1.x, n1.y - 16, n2.x, n2.y - 16);
-    // beanbags
-    for (const [x, y, c] of [[3.2, 4.4, 0xef476f], [3.4, 5.3, 0x3a86ff]] as [number, number, number][]) {
-      const p = this.iso(x, y);
-      this.add.ellipse(p.x, p.y - 6, 30, 20, c).setStrokeStyle(1.5, INK, 0.9).setDepth(p.y);
-    }
+    this.beanbag(3.2, 4.4, 0xef476f);
+    this.beanbag(3.4, 5.3, 0x3a86ff);
     this.plant(4.25, 0.2, "tall");
     this.plant(10.4, 9.4, "bush");
     this.plant(0.25, 3.5, "cactus");
-    this.plant(13.4, 4.3, "tall");
+    if (!wing) this.plant(13.4, 4.3, "tall");
     this.plant(3.4, 9.4, "cactus");
-
-    // desks with monitors, chairs and random clutter
-    const screens = [0x3a86ff, 0x06d6a0, 0x8338ec, 0xff006e, 0x2b2d42];
-    DESKS.forEach(([x, y], i) => {
-      this.chair(x + 0.55, y + 0.95, [0xef476f, 0x118ab2, 0x06d6a0, 0x8338ec][i % 4]);
-      this.box(x, y, 1.1, 0.6, 16, 0xffffff);
-      const mon = this.box(x + 0.35, y + 0.05, 0.42, 0.08, 16, screens[i % screens.length], 16);
-      mon.setDepth(this.iso(x + 0.55, y + 0.3).y + 0.5);
-      const top = this.iso(x + 0.95, y + 0.4);
-      const clutter = ["☕", "🦆", "🧃", "📎", "🪴", "🍕"][i % 6];
-      this.txt(top.x, top.y - 20, clutter, { fontSize: "10px" }).setOrigin(0.5).setDepth(this.iso(x + 0.55, y + 0.3).y + 0.6);
-    });
-    // CEO desk (huge, mahogany) with a nameplate and a golden statue of themselves
+    if (wing) { this.plant(19.5, 0.3, "tall"); this.plant(14.3, 9.4, "bush"); }
     this.box(0.9, 7.1, 2, 0.85, 18, 0x9c6644);
     const plate = this.iso(1.9, 7.95);
     this.txt(plate.x, plate.y - 9, "CHIEF", { fontFamily: "Impact, sans-serif", fontSize: "7px", color: "#ffd166" }).setOrigin(0.5).setDepth(plate.y + 1);
-    const statue = this.iso(1.2, 7.4);
-    this.txt(statue.x, statue.y - 26, "🏆", { fontSize: "14px" }).setOrigin(0.5).setDepth(statue.y + 1);
+    this.emojiAt(1.2, 7.4, 26, "🏆", 14);
+  }
 
+  private drawCampus() {
+    const { GH } = this.L;
+    this.floor((x, y) => {
+      const odd = (x + y) % 2 === 1;
+      if (x < 5 && y < 5) return odd ? 0x9fd8b5 : 0xb0e0c2; // meeting rooms
+      if (x < 5 && y >= 5 && y < 10) return odd ? 0xf6bd60 : 0xf7c873; // auditorium
+      if (x < 5 && y >= 10) return odd ? 0x2b2d42 : 0x343a5c; // CEO suite (dark marble)
+      if (x >= 14 && y < 3) return odd ? 0xffe8b8 : 0xfff1d0; // cafeteria
+      if (x >= 5 && x < 14 && y < 3) return odd ? 0xffc8dd : 0xffd6e5; // fun zone
+      return odd ? 0xe9f5f9 : 0xf4fbfd; // bright campus floor
+    });
+    const w = this.walls(0xcaf0f8, 0xade8f4, 0x48cae4);
+    this.windows(w, [5.5, 8.5, 11.5, 14.5, 17.5], 2.4);
+    this.wallText("left", 7, 46, "WE'RE A FAMILY™", "#e63946", 14);
+    this.wallText("back", 3, 46, "think different-ish", "#0077b6", 11);
+    this.wallText("back", 19.5, 70, "CAFETERIA", "#2b2d42", 10);
+    // meeting rooms
+    this.glassPane(5, 0, 5, 5); this.glassPane(0, 5, 5, 5); this.glassPane(0, 2.5, 5, 2.5);
+    this.box(1, 1.2, 3, 0.9, 14, 0xf4f1de);
+    this.box(1, 3.4, 3, 0.8, 14, 0xf4f1de);
+    // auditorium bleachers facing a stage
+    for (let i = 0; i < 3; i++) this.box(0.4 + i * 0.4, 5.6, 0.6, 3.6, 10 + i * 10, 0xffb703);
+    this.box(3.9, 6.2, 0.9, 2.4, 6, 0x023047);
+    this.emojiAt(4.3, 7.4, 14, "🎤", 12, 2);
+    // CEO glass corner suite with a view
+    this.glassPane(5, 10, 5, 14); this.glassPane(0, 10, 5, 10);
+    this.box(1.4, 11, 2.6, 0.9, 18, 0x1d3557);
+    this.emojiAt(1.8, 11.3, 30, "🏆", 14);
+    this.emojiAt(3.6, 11.3, 30, "🗿", 13);
+    // fun zone: a slide from the "upper floor" and a ball pit
+    const sp = this.iso(9, 1.2);
+    const slide = this.add.graphics().setDepth(sp.y + 2);
+    slide.lineStyle(9, 0xffd166).beginPath().arc(sp.x, sp.y - 50, 26, Math.PI * 0.9, Math.PI * 2.4).strokePath();
+    slide.lineStyle(2, INK).beginPath().arc(sp.x, sp.y - 50, 30, Math.PI * 0.9, Math.PI * 2.4).strokePath();
+    slide.lineStyle(9, 0xffd166).lineBetween(sp.x + 20, sp.y - 34, sp.x + 40, sp.y);
+    this.box(11.4, 0.4, 2, 1.6, 8, 0x90e0ef);
+    for (let i = 0; i < 18; i++) {
+      const b = this.iso(11.6 + ((i * 37) % 16) / 10, 0.6 + ((i * 53) % 12) / 10);
+      this.add.circle(b.x, b.y - 9, 3, [0xef476f, 0xffd166, 0x06d6a0, 0x118ab2][i % 4]).setDepth(this.iso(12.4, 1.2).y + 1);
+    }
+    // cafeteria
+    this.box(14.3, 0.2, 7.4, 0.7, 24, 0xe9edc9);
+    this.box(19, 0.3, 0.5, 0.45, 22, this.has("espresso") ? 0xffd166 : 0x3d405b, 24);
+    this.emojiAt(15.2, 0.5, 34, "🥗", 11, 2);
+    this.emojiAt(16.6, 0.5, 34, "🍣", 11, 2);
+    this.emojiAt(17.8, 0.5, 34, "🥑", 11, 2);
+    for (const x of [15, 17]) this.box(x, 1.5, 1.2, 0.6, 12, 0xffffff);
+    this.plant(5.3, 0.3, "tall"); this.plant(13.6, 13.4, "bush"); this.plant(0.3, 9.4, "cactus"); this.plant(21.4, 3.2, "tall");
+    this.label(2.5, 0.3, "MEETING ROOMS");
+    this.label(2.5, 9.7, "AUDITORIUM");
+    this.label(2.5, 13.7, "CEO SUITE");
+    this.label(9, 2.7, "FUN ZONE (mandatory)");
+    this.label(13.5, GH - 0.3, "CAMPUS");
+  }
+
+  /** Visible props for purchased upgrades. Flag-style upgrades (chairs, headphones, espresso) change existing art. */
+  private drawUpgrades() {
+    const props = this.view.upgrades.filter((id) => !["chairs", "headphones", "dog2", "espresso", "stipend", "zoombg"].includes(id));
+    if (this.has("espresso")) {
+      const c = this.L.coffee;
+      this.emojiAt(c.x, c.y - 0.6, 46, "✨", 10, 60);
+    }
+    props.forEach((id, i) => {
+      const s = this.L.upgradeSlots[i % this.L.upgradeSlots.length];
+      switch (id) {
+        case "climbing": {
+          this.box(s.x, s.y, 1.0, 0.25, 70, 0x8338ec);
+          const p = this.iso(s.x + 0.5, s.y + 0.25);
+          const g = this.add.graphics().setDepth(p.y + 1);
+          for (let k = 0; k < 9; k++) g.fillStyle([0xffd166, 0x06d6a0, 0xef476f][k % 3]).fillCircle(p.x - 14 + (k % 3) * 12 + (k % 2) * 3, p.y - 14 - Math.floor(k / 3) * 18, 3);
+          break;
+        }
+        case "quietroom": {
+          this.box(s.x, s.y, 0.9, 0.9, 50, 0x3d405b);
+          this.emojiAt(s.x + 0.45, s.y + 0.9, 30, "🔕", 11, 2);
+          const p = this.iso(s.x + 0.45, s.y + 0.45);
+          this.time.addEvent({ delay: 3000, loop: true, callback: () => this.floatEmoji(p.x, p.y - 60, "💤") });
+          break;
+        }
+        case "beerfridge":
+          this.box(s.x, s.y, 0.6, 0.6, 40, 0xe63946);
+          this.emojiAt(s.x + 0.3, s.y + 0.6, 24, "🍺", 12, 2);
+          break;
+        case "ledwall": {
+          this.box(s.x, s.y, 1.4, 0.2, 56, 0x111111);
+          const p = this.iso(s.x + 0.7, s.y + 0.2);
+          this.ledText = this.txt(p.x, p.y - 32, `${this.cb.getValuation()} ▲`, { fontFamily: "monospace", fontSize: "10px", color: "#39ff14", fontStyle: "bold" }).setOrigin(0.5).setDepth(p.y + 2);
+          this.time.addEvent({ delay: 1500, loop: true, callback: () => this.ledText?.setText(`${this.cb.getValuation()} ${Math.random() < 0.7 ? "▲" : "▼"}`) });
+          break;
+        }
+        case "plantwall": {
+          this.box(s.x, s.y, 1.2, 0.2, 60, 0x2d6a4f);
+          const p = this.iso(s.x + 0.6, s.y + 0.2);
+          const g = this.add.graphics().setDepth(p.y + 1);
+          for (let k = 0; k < 14; k++) g.fillStyle([0x52b788, 0x74c69d, 0x95d5b2][k % 3]).fillCircle(p.x - 18 + (k % 5) * 9, p.y - 10 - Math.floor(k / 5) * 16 - (k % 2) * 5, 6);
+          break;
+        }
+        case "robot": {
+          const p = this.iso(s.x + 0.3, s.y + 0.3);
+          const r = this.add.container(p.x, p.y).setDepth(p.y + 1);
+          const g = this.add.graphics();
+          g.fillStyle(0xdee2e6).fillRoundedRect(-9, -30, 18, 22, 5).lineStyle(1.5, INK).strokeRoundedRect(-9, -30, 18, 22, 5);
+          g.fillStyle(0xdee2e6).fillCircle(0, -38, 9).strokeCircle(0, -38, 9);
+          g.lineStyle(1.5, INK).lineBetween(0, -47, 0, -53);
+          g.fillStyle(0xef476f).fillCircle(0, -54, 2.5);
+          const eye = this.add.rectangle(0, -38, 10, 3, 0x39ff14);
+          r.add([this.add.ellipse(0, 0, 18, 6, 0x000000, 0.15), g, eye]);
+          this.tweens.add({ targets: eye, scaleX: 0.2, duration: 600, yoyo: true, repeat: -1, repeatDelay: 1800 });
+          r.setInteractive(new Phaser.Geom.Rectangle(-12, -56, 24, 58), Phaser.Geom.Rectangle.Contains);
+          r.on("pointerover", () => this.showTip(r, "AI receptionist. Definitely not recording this."));
+          r.on("pointerout", () => this.hideTip());
+          r.on("pointerdown", () => this.bubbleOn(r, Phaser.Utils.Array.GetRandom(["Hello, human. Your badge has been logged.", "I have summarised your face.", "Welcome! Please hold for synergy."])));
+          break;
+        }
+      }
+    });
+  }
+
+  // ---------- remote: a Zoom call ----------
+
+  private computeTiles(n: number) {
+    const cols = Math.max(3, Math.ceil(Math.sqrt(n * 1.5)));
+    const rows = Math.ceil(n / cols);
+    const gap = 10;
+    this.tiles = Array.from({ length: n }, (_, i) => ({
+      x: 20 + (i % cols) * (this.tileW + gap) + this.tileW / 2,
+      y: 70 + Math.floor(i / cols) * (this.tileH + gap) + this.tileH / 2,
+    }));
+    this.worldW = 40 + cols * (this.tileW + gap) - gap;
+    this.worldH = 70 + rows * (this.tileH + gap) + 70;
+  }
+
+  private drawZoom() {
+    this.add.rectangle(this.worldW / 2, this.worldH / 2, this.worldW + 2000, this.worldH + 2000, 0x1c1c24).setDepth(-10);
+    this.txt(20, 22, "🔴 REC   Weekly All-Company Sync — 47 minutes over", { fontFamily: "system-ui, sans-serif", fontSize: "14px", color: "#ffffff", fontStyle: "bold" }).setDepth(1);
+    this.txt(20, 44, "Remote-first since the lease ended. Click a tile for a 1:1.", { fontFamily: "system-ui, sans-serif", fontSize: "11px", color: "#adb5bd" }).setDepth(1);
+    const bar = this.worldH - 40;
+    this.add.rectangle(this.worldW / 2, bar, 360, 36, 0x2b2b36).setStrokeStyle(1, 0x444455).setDepth(1);
+    this.txt(this.worldW / 2, bar, "🎤   📹   🖥️   😀   ✋   ⋯   Leave", { fontFamily: "system-ui, sans-serif", fontSize: "14px", color: "#ffffff" }).setOrigin(0.5).setDepth(2);
+    // tile 0: the CEO on a "workation"; tile 1: the dog
+    this.zoomTile(0, "You (CEO) · Bali 🏝️", 0x48cae4, true);
+    this.ceo = this.makeFigure({ shirt: 0xf8f9fa, pants: 0x1a1a2e, skin: 0xffd8b1, hair: 0x1a1a1a, style: "bowl", acc: "none", ceo: true }).c;
+    this.placeInTile(this.ceo, 0);
+    this.ceo.setInteractive(new Phaser.Geom.Rectangle(-14, -56, 28, 58), Phaser.Geom.Rectangle.Contains);
+    this.ceo.on("pointerdown", () => this.cb.onCeoClick());
+    this.ceo.on("pointerover", () => this.showTip(this.ceo, "You, the CEO. Click for your secret finances 🕶️"));
+    this.ceo.on("pointerout", () => this.hideTip());
+    this.zoomTile(1, "Biscuit (guest)", 0x99582a);
+    const dt = this.tiles[1];
+    this.txt(dt.x, dt.y - 4, "🐶", { fontSize: "48px" }).setOrigin(0.5).setDepth(5);
+    this.setOffshore(0);
+  }
+
+  private zoomTile(i: number, name: string, bg: number, beach = false) {
+    const t = this.tiles[i];
+    if (!t) return;
+    const g = this.add.graphics().setDepth(0);
+    const x = t.x - this.tileW / 2, y = t.y - this.tileH / 2;
+    const branded = this.has("zoombg") && i > 1;
+    if (beach || branded) {
+      g.fillStyle(0x90e0ef).fillRoundedRect(x, y, this.tileW, this.tileH, 8);
+      g.fillStyle(0xffe8a3).fillRect(x, y + this.tileH * 0.65, this.tileW, this.tileH * 0.35);
+      g.fillStyle(0xffd166).fillCircle(x + this.tileW - 24, y + 22, 12);
+    } else {
+      g.fillStyle(bg).fillRoundedRect(x, y, this.tileW, this.tileH, 8);
+      // a bookshelf or a window, the classic "I'm working" backgrounds
+      if (i % 2) {
+        g.fillStyle(this.shade(bg, 0.7)).fillRect(x + 10, y + 10, 40, 50);
+        for (let k = 0; k < 4; k++) g.fillStyle([0xef476f, 0x118ab2, 0xffd166, 0x06d6a0][(k + i) % 4]).fillRect(x + 13 + k * 9, y + 14, 6, 18);
+      } else {
+        g.fillStyle(0xcaf0f8).fillRect(x + this.tileW - 55, y + 12, 42, 32);
+      }
+    }
+    if (this.has("stipend") && i > 1) g.lineStyle(3, 0xfff3b0, 0.9).strokeCircle(x + 24, y + 26, 12); // ring light
+    g.lineStyle(2, 0x000000, 0.4).strokeRoundedRect(x, y, this.tileW, this.tileH, 8);
+    // desk edge hides legs
+    const desk = this.add.graphics().setDepth(10);
+    desk.fillStyle(0x6f4518).fillRect(x, y + this.tileH - 18, this.tileW, 18);
+    desk.fillStyle(0x000000, 0.55).fillRoundedRect(x + 6, y + this.tileH - 20, Math.min(this.tileW - 12, name.length * 5.6 + 10), 16, 4);
+    this.txt(x + 11, y + this.tileH - 18, name, { fontFamily: "system-ui, sans-serif", fontSize: "10px", color: "#fff" }).setDepth(11);
+    if (branded) this.txt(x + this.tileW - 8, y + 6, "#WeAreFamily", { fontFamily: "Impact, sans-serif", fontSize: "9px", color: "#e63946" }).setOrigin(1, 0).setDepth(11);
+  }
+
+  private placeInTile(c: Phaser.GameObjects.Container, i: number) {
+    const t = this.tiles[i] ?? this.tiles[this.tiles.length - 1];
+    c.setPosition(t.x, t.y + this.tileH / 2 + 4).setScale(1.5).setDepth(5);
+  }
+
+  // ---------- CEO, safe, money ----------
+
+  private spawnCeo() {
     this.ceo = this.makeFigure({ shirt: 0x2b2d42, pants: 0x1a1a2e, skin: 0xffd8b1, hair: 0x1a1a1a, style: "bowl", acc: "none", ceo: true }).c;
-    const cp = this.iso(2.1, 8.6);
+    const cp = this.iso(this.L.ceo.x, this.L.ceo.y);
     this.ceo.setPosition(cp.x, cp.y).setDepth(cp.y);
     this.ceo.setInteractive(new Phaser.Geom.Rectangle(-14, -56, 28, 58), Phaser.Geom.Rectangle.Contains);
     this.ceo.on("pointerdown", () => this.cb.onCeoClick());
     this.ceo.on("pointerover", () => this.showTip(this.ceo, "You, the CEO. Click for your secret finances 🕶️"));
     this.ceo.on("pointerout", () => this.hideTip());
     this.tweens.add({ targets: this.ceo, angle: { from: -3, to: 3 }, duration: 1400, yoyo: true, repeat: -1, ease: "Sine.inOut" });
-    this.setOffshore(0);
   }
-
-  private chair(gx: number, gy: number, color: number) {
-    const p = this.iso(gx, gy);
-    const g = this.add.graphics().setDepth(p.y + 0.4);
-    g.lineStyle(2, INK, 0.9);
-    for (const a of [0, 1.26, 2.51, 3.77, 5.03]) g.lineBetween(p.x, p.y - 2, p.x + Math.cos(a) * 9, p.y - 2 + Math.sin(a) * 4);
-    g.lineBetween(p.x, p.y - 2, p.x, p.y - 9);
-    g.fillStyle(this.shade(color, 0.8)).fillRoundedRect(p.x - 9, p.y - 34, 18, 20, 6).lineStyle(1.5, INK).strokeRoundedRect(p.x - 9, p.y - 34, 18, 20, 6);
-    g.fillStyle(color).fillEllipse(p.x, p.y - 11, 22, 9).strokeEllipse(p.x, p.y - 11, 22, 9);
-  }
-
-  // ---------- the "totally normal office safe" that grows with the offshore account ----------
-
-  private safe?: Phaser.GameObjects.Container;
-  private safeAmount = -1;
 
   setOffshore(amount: number) {
     if (amount === this.safeAmount) return;
     const grew = this.safeAmount >= 0 && amount > this.safeAmount;
     this.safeAmount = amount;
     this.safe?.destroy();
-    const gx = 0.25, gy = 8.9;
-    const h = 20 + Math.min(70, (amount / 1_000_000) * 18);
-    const g = this.box(gx, gy, 0.7, 0.7, h, 0x6c757d);
-    const top = this.iso(gx + 0.35, gy + 0.35);
-    const front = this.iso(gx + 0.35, gy + 0.7);
-    const dial = this.add.graphics();
-    dial.fillStyle(0xffd166).fillCircle(front.x - 9, front.y - h / 2, 4).lineStyle(1.5, INK).strokeCircle(front.x - 9, front.y - h / 2, 4);
-    const sign = this.txt(front.x - 9, front.y - h / 2 - 12, "Zug", { fontFamily: "Impact, sans-serif", fontSize: "7px", color: "#ffd166" }).setOrigin(0.5);
-    const items: Phaser.GameObjects.GameObject[] = [g, dial, sign];
     const bags = Math.min(6, Math.floor(amount / 250_000));
-    for (let i = 0; i < bags; i++) {
-      items.push(this.txt(top.x - 10 + (i % 3) * 10, top.y - h - 6 - Math.floor(i / 3) * 9, "💰", { fontSize: "11px" }).setOrigin(0.5));
+    if (this.remote) {
+      // remote: money bags pile up on the CEO's tile
+      const t = this.tiles[0];
+      const items: Phaser.GameObjects.GameObject[] = [];
+      for (let i = 0; i < bags; i++) items.push(this.txt(t.x - this.tileW / 2 + 14 + i * 12, t.y - this.tileH / 2 + 10, "💰", { fontSize: "11px" }));
+      this.safe = this.add.container(0, 0, items).setDepth(12);
+      return;
     }
+    const gx = this.L.safe.x, gy = this.L.safe.y;
+    const small = this.view.tier === "garage";
+    const size = small ? 0.45 : 0.7;
+    const h = (small ? 12 : 20) + Math.min(70, (amount / 1_000_000) * 18);
+    const g = this.box(gx, gy, size, size, h, small ? 0xc8a27c : 0x6c757d);
+    const top = this.iso(gx + size / 2, gy + size / 2);
+    const front = this.iso(gx + size / 2, gy + size);
+    const dial = this.add.graphics();
+    if (!small) dial.fillStyle(0xffd166).fillCircle(front.x - 9, front.y - h / 2, 4).lineStyle(1.5, INK).strokeCircle(front.x - 9, front.y - h / 2, 4);
+    const sign = this.txt(front.x - 9, front.y - h / 2 - 12, small ? "shoebox" : "Zug", { fontFamily: "Impact, sans-serif", fontSize: "7px", color: small ? "#2b2d42" : "#ffd166" }).setOrigin(0.5);
+    const items: Phaser.GameObjects.GameObject[] = [g, dial, sign];
+    for (let i = 0; i < bags; i++) items.push(this.txt(top.x - 10 + (i % 3) * 10, top.y - h - 6 - Math.floor(i / 3) * 9, "💰", { fontSize: "11px" }).setOrigin(0.5));
     this.safe = this.add.container(0, 0, items).setDepth(top.y + 1);
     const zone = this.add.zone(top.x, top.y - h / 2, 40, h + 20).setInteractive();
     this.safe.add(zone);
     zone.on("pointerover", () => {
-      this.tooltip.setText(amount ? `Totally normal office safe · ${(amount / 1e6).toFixed(2)}M of "consulting"` : "Totally normal, empty office safe").setPosition(top.x + 20, top.y - h - 30).setVisible(true);
+      const what = small ? "Shoebox labelled 'TAXES (DO NOT OPEN)'" : "Totally normal office safe";
+      this.tooltip.setText(amount ? `${what} · ${(amount / 1e6).toFixed(2)}M of "consulting"` : `${what} · empty`).setPosition(top.x + 20, top.y - h - 30).setVisible(true);
     });
     zone.on("pointerout", () => this.hideTip());
     if (grew) this.tweens.add({ targets: this.safe, scaleY: { from: 0.9, to: 1 }, duration: 300, ease: "Back.out" });
   }
 
-  /** Banknotes fly from the open space into the safe. */
+  /** Banknotes fly from the team into the safe. */
   moneyFly() {
-    const to = this.iso(0.6, 9.2);
+    const to = this.remote ? { x: this.tiles[0].x, y: this.tiles[0].y + 50 } : this.iso(this.L.safe.x + 0.3, this.L.safe.y + 0.3);
+    const sources = [...this.people.values()];
     for (let i = 0; i < 14; i++) {
-      const from = this.iso(6 + Math.random() * 5, 3 + Math.random() * 5);
-      const t = this.txt(from.x, from.y - 30, "💸", { fontSize: "14px" }).setOrigin(0.5).setDepth(57_000);
+      const src = sources.length ? Phaser.Utils.Array.GetRandom(sources).c : { x: this.worldW / 2, y: this.worldH / 2 };
+      const t = this.txt(src.x, src.y - 30, "💸", { fontSize: "14px" }).setOrigin(0.5).setDepth(57_000);
       this.tweens.add({
         targets: t,
         x: to.x,
@@ -409,18 +887,11 @@ export class OfficeScene extends Phaser.Scene {
 
   // ---------- characters ----------
 
-  private makeFigure(o: {
-    shirt: number;
-    pants: number;
-    skin: number;
-    hair: number;
-    style: (typeof HAIRSTYLES)[number];
-    acc: (typeof ACCESSORIES)[number];
-    ceo?: boolean;
-  }) {
+  private makeFigure(o: { shirt: number; pants: number; skin: number; hair: number; style: HairStyle; acc: Accessory; ceo?: boolean }) {
     const c = this.add.container(0, 0);
     const body = this.add.container(0, 0);
     const shadow = this.add.ellipse(0, 0, 22, 8, 0x000000, 0.18);
+    const acc: Accessory | "shades" = o.ceo ? "shades" : this.has("headphones") ? "headphones" : o.acc;
 
     const leg = (dx: number) => {
       const l = this.add.graphics();
@@ -434,24 +905,22 @@ export class OfficeScene extends Phaser.Scene {
 
     const torso = this.add.graphics();
     torso.fillStyle(o.shirt).fillRoundedRect(-10, -26, 20, 19, 8).lineStyle(1.5, INK).strokeRoundedRect(-10, -26, 20, 19, 8);
-    // arms
     torso.fillStyle(this.shade(o.shirt, 0.85)).fillEllipse(-11, -17, 6, 12).strokeEllipse(-11, -17, 6, 12);
     torso.fillEllipse(11, -17, 6, 12).strokeEllipse(11, -17, 6, 12);
     torso.fillStyle(o.skin).fillCircle(-11, -11, 2.6).fillCircle(11, -11, 2.6);
     if (o.ceo) {
       torso.fillStyle(0xffffff).fillTriangle(-4, -26, 4, -26, 0, -19);
       torso.fillStyle(0xe63946).fillTriangle(-2, -22, 2, -22, 0, -10).lineStyle(1, INK).strokeTriangle(-2, -22, 2, -22, 0, -10);
-      torso.lineStyle(1.5, 0xffd166).beginPath().arc(0, -24, 6, 0.3, Math.PI - 0.3).strokePath(); // gold chain
+      torso.lineStyle(1.5, 0xffd166).beginPath().arc(0, -24, 6, 0.3, Math.PI - 0.3).strokePath();
     }
 
     const head = this.add.graphics();
     const hy = -40;
-    // hair behind head
     if (o.style === "long") head.fillStyle(o.hair).fillRoundedRect(-12, hy - 6, 24, 22, 8);
     if (o.style === "bun") head.fillStyle(o.hair).fillCircle(0, hy - 14, 6).lineStyle(1.5, INK).strokeCircle(0, hy - 14, 6);
     head.fillStyle(o.skin).fillCircle(0, hy, 12).lineStyle(1.5, INK).strokeCircle(0, hy, 12);
-    head.fillStyle(this.shade(o.skin, 0.95)).fillCircle(-12, hy + 1, 3).fillCircle(12, hy + 1, 3); // ears
-    head.fillStyle(0xff8fab, 0.45).fillCircle(-6, hy + 5, 2.6).fillCircle(6, hy + 5, 2.6); // blush
+    head.fillStyle(this.shade(o.skin, 0.95)).fillCircle(-12, hy + 1, 3).fillCircle(12, hy + 1, 3);
+    head.fillStyle(0xff8fab, 0.45).fillCircle(-6, hy + 5, 2.6).fillCircle(6, hy + 5, 2.6);
     head.fillStyle(o.hair).lineStyle(1.5, INK);
     switch (o.style) {
       case "bowl":
@@ -476,11 +945,10 @@ export class OfficeScene extends Phaser.Scene {
     const eyes = this.add.graphics();
     eyes.fillStyle(INK).fillEllipse(-4.5, hy + 0.5, 3, 4).fillEllipse(4.5, hy + 0.5, 3, 4);
     eyes.fillStyle(0xffffff).fillCircle(-4, hy - 0.5, 0.8).fillCircle(5, hy - 0.5, 0.8);
-    eyes.y = 0;
     const face = this.add.graphics();
     const extra = this.add.graphics();
     extra.lineStyle(1.5, INK);
-    switch (o.ceo ? "shades" : o.acc) {
+    switch (acc) {
       case "shades":
         extra.fillStyle(0x111111).fillRoundedRect(-11, hy - 3, 9, 6, 2).fillRoundedRect(2, hy - 3, 9, 6, 2).lineBetween(-2, hy - 1, 2, hy - 1);
         extra.fillStyle(0xffffff, 0.5).fillRect(-9, hy - 2, 3, 1.5).fillRect(4, hy - 2, 3, 1.5);
@@ -503,8 +971,7 @@ export class OfficeScene extends Phaser.Scene {
     body.add([torso, head, eyes, face, extra]);
     c.add([shadow, legL, legR, body]);
     if (o.ceo) {
-      const coffee = this.txt(14, -22, "☕", { fontSize: "11px" }).setOrigin(0.5);
-      body.add(coffee);
+      body.add(this.txt(14, -22, "☕", { fontSize: "11px" }).setOrigin(0.5));
       this.drawMouth(face, 90);
     }
     return { c, body, legL, legR, face, eyes };
@@ -519,11 +986,11 @@ export class OfficeScene extends Phaser.Scene {
       face.lineBetween(-3, hy + 7, 3, hy + 7);
     } else {
       face.beginPath().arc(0, hy + 10, 4, Math.PI + 0.4, -0.4).strokePath();
-      face.lineBetween(-7, hy - 5, -2, hy - 3).lineBetween(7, hy - 5, 2, hy - 3); // angry brows
+      face.lineBetween(-7, hy - 5, -2, hy - 3).lineBetween(7, hy - 5, 2, hy - 3);
     }
   }
 
-  private showTip(obj: Phaser.GameObjects.Container, text: string) {
+  private showTip(obj: { x: number; y: number }, text: string) {
     this.tooltip.setText(text).setPosition(obj.x + 14, obj.y - 76).setVisible(true);
     this.input.setDefaultCursor("pointer");
   }
@@ -535,9 +1002,20 @@ export class OfficeScene extends Phaser.Scene {
 
   // ---------- people ----------
 
-  private seat(desk: number): Pt {
-    const [x, y] = DESKS[desk];
-    return { x: x + 0.55, y: y + 0.95 };
+  /** Where someone works: their desk's chair, or a beanbag/corner if they're hot-desking. */
+  private home(e: Employee): Pt {
+    if (this.hasDesk(e)) {
+      const d = this.L.desks[e.desk];
+      return { x: d.x + 0.55, y: d.y + 0.95 };
+    }
+    const n = this.L.overflow.length;
+    const o = this.L.overflow[e.id % n];
+    const k = Math.floor(e.id / n);
+    return { x: o.x + (k % 2) * 0.35, y: o.y + (k % 3) * 0.25 };
+  }
+
+  private hasDesk(e: Employee) {
+    return e.desk >= 0 && e.desk < this.L.desks.length;
   }
 
   private place(p: { c: Phaser.GameObjects.Container; g: Pt }) {
@@ -548,20 +1026,24 @@ export class OfficeScene extends Phaser.Scene {
   sync(employees: Employee[]) {
     const ids = new Set(employees.map((e) => e.id));
     for (const id of [...this.people.keys()]) if (!ids.has(id)) this.leave(id);
-    for (const e of employees) {
+    employees.forEach((e, idx) => {
       const p = this.people.get(e.id);
       if (p) {
+        const deskChanged = p.data.desk !== e.desk;
         p.data = e;
         const m = this.cb.getMood(e.id);
-        if (Math.abs(m - p.lastMood) > 0) {
+        if (m !== p.lastMood) {
           this.drawMouth(p.face, m);
           p.lastMood = m;
+          p.camOff?.setVisible(m < 30);
         }
-      } else this.spawn(e);
-    }
+        if (deskChanged && !this.remote) this.walkTo(p, this.home(e), () => this.settle(p));
+      } else this.spawn(e, idx);
+    });
+    this.spawnSeated = false;
   }
 
-  private spawn(e: Employee) {
+  private spawn(e: Employee, idx: number) {
     const r = (n: number, salt: number) => (e.id * 7919 + salt * 104729) % n;
     const f = this.makeFigure({
       shirt: SHIRTS[r(SHIRTS.length, 1)],
@@ -573,23 +1055,40 @@ export class OfficeScene extends Phaser.Scene {
     });
     const mood = this.cb.getMood(e.id);
     this.drawMouth(f.face, mood);
-    const p: Person = { data: e, ...f, skin: 0, g: { x: DOOR[0], y: DOOR[1] }, walking: false, seated: false, phase: Math.random() * 10, lastMood: mood };
+    const start = this.spawnSeated || this.remote ? this.home(e) : { ...this.L.door };
+    const p: Person = { data: e, ...f, g: start, walking: false, seated: false, phase: Math.random() * 10, lastMood: mood };
     this.people.set(e.id, p);
-    this.place(p);
     f.c.setInteractive(new Phaser.Geom.Rectangle(-14, -56, 28, 58), Phaser.Geom.Rectangle.Contains);
     f.c.on("pointerdown", () => this.cb.onEmployeeClick(e.id));
-    f.c.on("pointerover", () => this.showTip(f.c, `${p.data.name} · ${p.data.role}`));
+    f.c.on("pointerover", () => this.showTip(f.c, `${p.data.name} · ${p.data.role}${!this.remote && !this.hasDesk(p.data) ? " · no desk 😤" : ""}`));
     f.c.on("pointerout", () => this.hideTip());
-    // blink
     this.time.addEvent({
       delay: 2500 + Math.random() * 3000,
       loop: true,
-      callback: () => {
-        if (!p.c.active) return;
-        this.tweens.add({ targets: p.eyes, scaleY: 0.1, y: -40 * 0.9, duration: 70, yoyo: true });
-      },
+      callback: () => p.c.active && this.tweens.add({ targets: p.eyes, scaleY: 0.1, y: -40 * 0.9, duration: 70, yoyo: true }),
     });
-    this.walkTo(p, this.seat(e.desk), () => this.sitDown(p));
+    if (this.remote) {
+      const slot = idx + 2;
+      this.zoomTile(slot, e.name, [0xe9c46a, 0x84a59d, 0xcdb4db, 0xa8dadc, 0xf4a261][e.id % 5]);
+      this.placeInTile(f.c, slot);
+      f.body.scaleX = 1;
+      const t = this.tiles[slot];
+      if (t) {
+        const off = this.add.container(0, 0).setDepth(9);
+        const bg = this.add.rectangle(t.x, t.y - 9, this.tileW, this.tileH - 18, 0x2b2b36);
+        const initials = e.name.split(" ").map((w) => w[0]).join("");
+        const circle = this.add.circle(t.x, t.y - 10, 22, SHIRTS[r(SHIRTS.length, 1)]);
+        const ini = this.txt(t.x, t.y - 10, initials, { fontFamily: "system-ui, sans-serif", fontSize: "16px", color: "#fff", fontStyle: "bold" }).setOrigin(0.5);
+        const note = this.txt(t.x, t.y + 22, "camera off", { fontFamily: "system-ui, sans-serif", fontSize: "9px", color: "#adb5bd" }).setOrigin(0.5);
+        off.add([bg, circle, ini, note]);
+        off.setVisible(mood < 30);
+        p.camOff = off;
+      }
+      return;
+    }
+    this.place(p);
+    if (this.spawnSeated) this.settle(p);
+    else this.walkTo(p, this.home(e), () => this.settle(p));
   }
 
   private animatePerson(p: Person, time: number) {
@@ -610,12 +1109,14 @@ export class OfficeScene extends Phaser.Scene {
 
   /** Waypoints that stay in aisles and corridors instead of cutting through desks. */
   private route(from: Pt, to: Pt): Pt[] {
-    const aisle = (x: number) => AISLES.reduce((a, b) => (Math.abs(b - x) < Math.abs(a - x) ? b : a));
-    const inDeskArea = (q: Pt) => q.x > 4.3 && q.x < 12.8 && q.y > 1.7 && q.y < 9.1;
+    if (this.remote) return [to];
+    const { aisles, corridors, deskArea: a } = this.L;
+    const aisle = (x: number) => aisles.reduce((p, q) => (Math.abs(q - x) < Math.abs(p - x) ? q : p));
+    const inDeskArea = (q: Pt) => q.x > a.x0 && q.x < a.x1 && q.y > a.y0 && q.y < a.y1;
     if (!inDeskArea(from) && !inDeskArea(to)) return [to];
-    const cy = CORRIDORS.reduce((a, b) => (Math.abs(from.y - b) + Math.abs(to.y - b) < Math.abs(from.y - a) + Math.abs(to.y - a) ? b : a));
+    const cy = corridors.reduce((p, q) => (Math.abs(from.y - q) + Math.abs(to.y - q) < Math.abs(from.y - p) + Math.abs(to.y - p) ? q : p));
     const ax1 = inDeskArea(from) ? aisle(from.x) : from.x;
-    const ax2 = inDeskArea(to) ? aisle(to.x) : to.x < 4.3 ? 4.5 : to.x;
+    const ax2 = inDeskArea(to) ? aisle(to.x) : to.x < a.x0 ? aisles[0] : to.x;
     const pts: Pt[] = [{ x: ax1, y: from.y }, { x: ax1, y: cy }, { x: ax2, y: cy }, { x: ax2, y: to.y }, to];
     return pts.filter((q, i, arr) => Math.hypot(q.x - (i ? arr[i - 1].x : from.x), q.y - (i ? arr[i - 1].y : from.y)) > 0.05);
   }
@@ -624,6 +1125,10 @@ export class OfficeScene extends Phaser.Scene {
     p.timer?.remove();
     this.tweens.killTweensOf(p.g);
     p.seated = false;
+    if (this.remote) {
+      done?.();
+      return;
+    }
     p.walking = true;
     const path = this.route({ ...p.g }, to);
     const step = (i: number) => {
@@ -649,25 +1154,29 @@ export class OfficeScene extends Phaser.Scene {
     step(0);
   }
 
-  private sitDown(p: Person) {
-    p.seated = true;
+  /** Arrived home: sit if there's a chair, otherwise sulk on the beanbag. */
+  private settle(p: Person) {
+    p.seated = this.hasDesk(p.data);
     p.body.scaleX = -1;
+    if (!p.seated && Math.random() < 0.5) this.emote(p.c, Phaser.Utils.Array.GetRandom(["😤", "🪑?", "😩"]));
     this.idle(p);
   }
 
   private idle(p: Person) {
+    if (this.remote) return;
     p.timer = this.time.delayedCall(Phaser.Math.Between(5000, 16000), () => {
       if (!this.people.has(p.data.id)) return;
+      const c = this.L.coffee;
       const target =
         Math.random() < 0.5
-          ? { x: COFFEE[0] - 0.4 + Math.random() * 0.7, y: COFFEE[1] + 0.6 + Math.random() * 0.5 }
+          ? { x: c.x - 0.4 + Math.random() * 0.7, y: c.y + 0.4 + Math.random() * 0.5 }
           : (() => {
-              const [x, y] = Phaser.Utils.Array.GetRandom(HANGOUTS);
-              return { x: x + Math.random() * 0.4, y: y + Math.random() * 0.4 };
+              const h = Phaser.Utils.Array.GetRandom(this.L.hangouts);
+              return { x: h.x + Math.random() * 0.4, y: h.y + Math.random() * 0.4 };
             })();
       this.walkTo(p, target, () => {
-        if (Math.random() < 0.4) this.emote(p.c, target.y < 2 ? "☕" : this.moodEmote(p.lastMood));
-        p.timer = this.time.delayedCall(Phaser.Math.Between(2000, 5000), () => this.walkTo(p, this.seat(p.data.desk), () => this.sitDown(p)));
+        if (Math.random() < 0.4) this.emote(p.c, Math.hypot(target.x - c.x, target.y - c.y) < 1.2 ? "☕" : this.moodEmote(p.lastMood));
+        p.timer = this.time.delayedCall(Phaser.Math.Between(2000, 5000), () => this.walkTo(p, this.home(p.data), () => this.settle(p)));
       });
     });
   }
@@ -680,18 +1189,29 @@ export class OfficeScene extends Phaser.Scene {
     const all = [...this.people.values()];
     if (!all.length) return;
     const p = Phaser.Utils.Array.GetRandom(all);
-    if (p.seated && p.lastMood < 30 && Math.random() < 0.6) this.emote(p.c, "💤");
+    if (this.remote) {
+      if (p.camOff?.visible) return;
+      this.emote(p.c, Phaser.Utils.Array.GetRandom(["🔇", "👋", "🍕", "🐈", "📶", this.moodEmote(p.lastMood)]));
+      return;
+    }
+    if (!this.hasDesk(p.data) && !p.walking && Math.random() < 0.5) this.emote(p.c, "🪑?");
+    else if (p.seated && p.lastMood < 30 && Math.random() < 0.6) this.emote(p.c, "💤");
     else if (Math.random() < 0.5) this.emote(p.c, this.moodEmote(p.lastMood));
   }
 
-  emote(target: Phaser.GameObjects.Container, e: string) {
-    const t = this.txt(target.x, target.y - 62, e, { fontSize: "16px" }).setOrigin(0.5).setDepth(50_000).setScale(0.3);
+  emote(target: { x: number; y: number }, e: string) {
+    this.floatEmoji(target.x, target.y - (this.remote ? 90 : 62), e);
+  }
+
+  private floatEmoji(x: number, y: number, e: string) {
+    const t = this.txt(x, y, e, { fontSize: "16px", fontFamily: "system-ui, sans-serif", color: "#2b2d42", fontStyle: "bold" }).setOrigin(0.5).setDepth(50_000).setScale(0.3);
     this.tweens.add({ targets: t, scale: 1, duration: 220, ease: "Back.out" });
     this.tweens.add({ targets: t, y: t.y - 22, alpha: 0, delay: 900, duration: 700, onComplete: () => t.destroy() });
   }
 
   private coffeeSteam() {
-    const p = this.iso(12.45, 0.42);
+    const c = this.L.coffee;
+    const p = this.iso(c.x, c.y - 0.9);
     const s = this.add.circle(p.x + Phaser.Math.Between(-2, 2), p.y - 48, 3, 0xffffff, 0.8).setDepth(p.y + 50);
     this.tweens.add({ targets: s, y: s.y - 20, alpha: 0, scale: 2.2, duration: 1600, onComplete: () => s.destroy() });
   }
@@ -703,55 +1223,61 @@ export class OfficeScene extends Phaser.Scene {
     p.timer?.remove();
     this.drawMouth(p.face, 10);
     this.bubbleOn(p.c, Phaser.Utils.Array.GetRandom(["Bye.", "Good luck with the IPO lol", "Taking my stapler.", "See you on LinkedIn.", "I'm keeping the hoodie."]));
-    this.walkTo(p, { x: DOOR[0], y: DOOR[1] }, () =>
+    const targets: Phaser.GameObjects.GameObject[] = p.camOff ? [p.c, p.camOff] : [p.c];
+    const vanish = () =>
       this.tweens.add({
-        targets: p.c,
+        targets,
         alpha: 0,
         duration: 400,
+        delay: this.remote ? 1500 : 0,
         onComplete: () => {
           this.bubbles = this.bubbles.filter((b) => b.target !== p.c);
           p.c.destroy();
+          p.camOff?.destroy();
         },
-      }),
-    );
+      });
+    if (this.remote) vanish();
+    else this.walkTo(p, { ...this.L.door }, vanish);
   }
 
-  // ---------- dog ----------
+  // ---------- dogs ----------
 
-  private spawnDog() {
+  private spawnDog(color: number, tip: string) {
     const c = this.add.container(0, 0);
     const body = this.add.container(0, 0);
     const g = this.add.graphics();
-    g.lineStyle(1.5, INK).fillStyle(0xc68642);
+    g.lineStyle(1.5, INK).fillStyle(color);
     g.fillEllipse(0, -8, 22, 12).strokeEllipse(0, -8, 22, 12);
     g.fillCircle(10, -15, 7).strokeCircle(10, -15, 7);
-    g.fillStyle(0x8d5524).fillEllipse(6, -18, 5, 9).fillEllipse(14, -18, 5, 9);
-    g.fillStyle(INK).fillCircle(12, -16, 1.4).fillCircle(16, -13, 1.8);
-    g.lineStyle(2, 0xc68642).lineBetween(-10, -10, -15, -16);
-    g.fillStyle(0xe63946).fillRect(5, -11, 8, 2); // collar
+    g.fillStyle(this.shade(color, 0.7)).fillEllipse(6, -18, 5, 9).fillEllipse(14, -18, 5, 9);
+    g.fillStyle(color === INK ? 0xffffff : INK).fillCircle(12, -16, 1.4).fillCircle(16, -13, 1.8);
+    g.lineStyle(2, color).lineBetween(-10, -10, -15, -16);
+    g.fillStyle(0xe63946).fillRect(5, -11, 8, 2);
     body.add(g);
     c.add([this.add.ellipse(0, 0, 22, 6, 0x000000, 0.15), body]);
-    this.dog = { c, g: { x: 3, y: 5 }, walking: false };
-    this.place(this.dog);
+    const start = Phaser.Utils.Array.GetRandom(this.L.hangouts);
+    const dog: Dog = { c, body, g: { ...start }, walking: false };
+    this.dogs.push(dog);
+    this.place(dog);
     c.setInteractive(new Phaser.Geom.Rectangle(-12, -24, 30, 26), Phaser.Geom.Rectangle.Contains);
-    c.on("pointerover", () => this.showTip(c, "Biscuit · Chief Happiness Officer (has more equity than you)"));
+    c.on("pointerover", () => this.showTip(c, tip));
     c.on("pointerout", () => this.hideTip());
     c.on("pointerdown", () => this.bubbleOn(c, Phaser.Utils.Array.GetRandom(["Woof.", "Woof (that's a no on the bonus).", "*sniffs your pitch deck*", "Bark-to-market fit."])));
     const wander = () => {
-      const target = { x: 0.5 + Math.random() * 13, y: Math.random() < 0.5 ? CORRIDOR_Y + Math.random() * 0.3 : 4.5 + Math.random() * 5 };
-      const t = { x: target.x > 4.3 && target.y > 1.7 ? AISLES[Math.floor(Math.random() * AISLES.length)] : target.x, y: target.y };
-      const dist = Math.hypot(t.x - this.dog.g.x, t.y - this.dog.g.y);
-      const dxs = t.x - this.dog.g.x - (t.y - this.dog.g.y);
-      body.scaleX = dxs >= 0 ? 1 : -1;
-      this.dog.walking = true;
+      if (!c.active) return;
+      const pool = [...this.L.hangouts, ...this.L.overflow, ...this.L.corridors.map((y) => ({ x: 1 + Math.random() * (this.L.GW - 2), y }))];
+      const t = Phaser.Utils.Array.GetRandom(pool);
+      const dist = Math.hypot(t.x - dog.g.x, t.y - dog.g.y);
+      body.scaleX = t.x - dog.g.x - (t.y - dog.g.y) >= 0 ? 1 : -1;
+      dog.walking = true;
       this.tweens.add({
-        targets: this.dog.g,
+        targets: dog.g,
         x: t.x,
         y: t.y,
-        duration: dist * 500,
-        onUpdate: () => this.place(this.dog),
+        duration: Math.max(200, dist * 500),
+        onUpdate: () => this.place(dog),
         onComplete: () => {
-          this.dog.walking = false;
+          dog.walking = false;
           this.time.delayedCall(Phaser.Math.Between(2000, 7000), wander);
         },
       });
@@ -760,6 +1286,25 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   // ---------- speech bubbles (own top layer, follow their speaker) ----------
+
+  private layoutBubbles() {
+    const placed: Phaser.Geom.Rectangle[] = [];
+    for (const b of this.bubbles) {
+      const bounds = b.box.getBounds();
+      const w = bounds.width / b.box.scaleX || bounds.width;
+      const h = bounds.height / b.box.scaleY || bounds.height;
+      let y = b.target.y - b.offset;
+      const x = b.target.x;
+      for (let guard = 0; guard < 8; guard++) {
+        const r = new Phaser.Geom.Rectangle(x - w / 2, y - h, w, h);
+        const hit = placed.find((o) => Phaser.Geom.Intersects.RectangleToRectangle(o, r));
+        if (!hit) break;
+        y = hit.y - 4;
+      }
+      b.box.setPosition(x, y);
+      placed.push(new Phaser.Geom.Rectangle(x - w / 2, y - h, w, h));
+    }
+  }
 
   private bubbleOn(target: Phaser.GameObjects.Container, text: string, dark = false) {
     const t = this.txt(0, 0, text, {
@@ -776,8 +1321,7 @@ export class OfficeScene extends Phaser.Scene {
     bg.lineStyle(1.5, INK, 0.9).strokeRoundedRect(-w / 2, -h + pad, w, h, 9);
     bg.fillStyle(dark ? 0x2b2d42 : 0xffffff, 0.97).fillTriangle(-6, pad - 0.5, 6, pad - 0.5, 0, pad + 8);
     bg.lineStyle(1.5, INK, 0.9).lineBetween(-6, pad, 0, pad + 8).lineBetween(6, pad, 0, pad + 8);
-    // stack above any bubble this speaker already has
-    const offset = 66 + this.bubbles.filter((b) => b.target === target).reduce((acc, b) => acc + (b.box.getBounds().height + 6), 0);
+    const offset = this.remote ? 95 : 66;
     const box = this.add.container(target.x, target.y - offset, [bg, t]).setDepth(55_000);
     const bubble: Bubble = { target, box, offset };
     this.bubbles.push(bubble);
@@ -805,12 +1349,17 @@ export class OfficeScene extends Phaser.Scene {
     this.bubbleOn(this.ceo, text, true);
   }
 
-  /** Everyone walks to the meeting room for an all-hands, then back. */
+  /** Everyone walks to the all-hands spot (meeting room, event space, auditorium...), then back. */
   gather() {
+    if (this.remote) {
+      for (const p of this.people.values()) this.time.delayedCall(Math.random() * 1500, () => this.emote(p.c, Phaser.Utils.Array.GetRandom(["🔇", "👋", "😐", "📶", "🫥"])));
+      return;
+    }
+    const a = this.L.gather;
     for (const p of this.people.values()) {
-      this.walkTo(p, { x: 0.6 + Math.random() * 3, y: 0.5 + Math.random() * 0.7 + (Math.random() < 0.5 ? 0 : 2.4) }, () => {
+      this.walkTo(p, { x: a.x0 + Math.random() * (a.x1 - a.x0), y: a.y0 + Math.random() * (a.y1 - a.y0) }, () => {
         p.body.scaleX = -1;
-        p.timer = this.time.delayedCall(7000 + Math.random() * 2000, () => this.walkTo(p, this.seat(p.data.desk), () => this.sitDown(p)));
+        p.timer = this.time.delayedCall(7000 + Math.random() * 2000, () => this.walkTo(p, this.home(p.data), () => this.settle(p)));
       });
     }
   }
@@ -837,20 +1386,19 @@ export class OfficeScene extends Phaser.Scene {
 
   // ---------- investors visiting for a pitch ----------
 
-  /** Resolves once all investors are standing in the meeting room. */
+  /** Resolves once all investors have arrived (in the meeting room, or on the call). */
   investorsArrive(): Promise<void> {
     this.investorsLeave(false, true);
     const arrivals: Promise<void>[] = [];
-    const spots: Pt[] = [{ x: 1.3, y: 0.8 }, { x: 2.3, y: 0.7 }, { x: 3.3, y: 1.2 }];
     const vests = [0x4a4e69, 0x22223b, 0x9a8c98];
-    spots.forEach((spot, i) => {
+    const firstTile = this.view.headcount + 2;
+    this.L.investorSpots.forEach((spot, i) => {
       const f = this.makeFigure({ shirt: vests[i], pants: 0xc9ada7, skin: SKIN[(i * 2) % SKIN.length], hair: HAIR[[5, 3, 0][i]], style: (["bald", "bowl", "spiky"] as const)[i], acc: "glasses" });
       this.drawMouth(f.face, 50);
       const p: Person = {
-        data: { id: -1 - i, name: "Investor", role: "VC", quirk: "", moodOffset: 0, desk: 0, talkedQuarter: 0 },
+        data: { id: -1 - i, name: "Investor", role: "VC", quirk: "", moodOffset: 0, desk: -1, talkedQuarter: 0 },
         ...f,
-        skin: 0,
-        g: { x: DOOR[0], y: DOOR[1] },
+        g: { ...this.L.door },
         walking: false,
         seated: false,
         phase: i,
@@ -860,6 +1408,20 @@ export class OfficeScene extends Phaser.Scene {
       f.c.on("pointerover", () => this.showTip(f.c, ["Partner · fleece vest, 3 board seats", "Associate · has read one book about blitzscaling", "Managing Partner · asks about TAM, then about AI"][i]));
       f.c.on("pointerout", () => this.hideTip());
       this.visitors.push(p);
+      if (this.remote) {
+        this.zoomTile(firstTile + i, ["VC Partner (Patagonia)", "VC Associate", "Managing Partner"][i], 0xdee2e6);
+        this.placeInTile(f.c, firstTile + i);
+        f.body.scaleX = 1;
+        arrivals.push(
+          new Promise((resolve) =>
+            this.time.delayedCall(300 + i * 300, () => {
+              this.emote(f.c, ["🧐", "📱", "🥤"][i]);
+              resolve();
+            }),
+          ),
+        );
+        return;
+      }
       this.place(p);
       arrivals.push(
         new Promise((resolve) =>
@@ -888,8 +1450,12 @@ export class OfficeScene extends Phaser.Scene {
       if (instant) return p.c.destroy();
       this.drawMouth(p.face, happy ? 90 : 20);
       this.emote(p.c, happy ? "🤑" : "🥱");
+      if (this.remote) {
+        this.time.delayedCall(1500 + i * 300, () => this.tweens.add({ targets: p.c, alpha: 0, duration: 400, onComplete: () => p.c.destroy() }));
+        return;
+      }
       this.time.delayedCall(1200 + i * 300, () =>
-        this.walkTo(p, { x: DOOR[0], y: DOOR[1] }, () => this.tweens.add({ targets: p.c, alpha: 0, duration: 400, onComplete: () => p.c.destroy() })),
+        this.walkTo(p, { ...this.L.door }, () => this.tweens.add({ targets: p.c, alpha: 0, duration: 400, onComplete: () => p.c.destroy() })),
       );
     });
   }
@@ -897,5 +1463,11 @@ export class OfficeScene extends Phaser.Scene {
   layoffShock() {
     this.cameras.main.shake(300, 0.004);
     for (const p of this.people.values()) this.time.delayedCall(Math.random() * 800, () => this.emote(p.c, Phaser.Utils.Array.GetRandom(["😱", "😨", "👀"])));
+  }
+
+  /** Little celebration when something new appears in the office. */
+  sparkle() {
+    const cam = this.cameras.main;
+    for (let i = 0; i < 8; i++) this.floatEmoji(cam.worldView.centerX + Phaser.Math.Between(-220, 220), cam.worldView.centerY + Phaser.Math.Between(-140, 140), "✨");
   }
 }

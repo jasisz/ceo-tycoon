@@ -1,13 +1,22 @@
 // Deterministic simulation core. The LLM only proposes deltas; this module applies
 // and clamps them, runs the quarterly economy and decides win/lose conditions.
 
+import {
+  FLOOR_COST,
+  FLOOR_DESKS,
+  FLOOR_RENT,
+  HOT_DESK_OVERFLOW,
+  MAX_HEADCOUNT,
+  OFFICES,
+  upgradeById,
+  type OfficeTier,
+} from "./office";
+
 export const FIRE_TARGET = 5_000_000;
-export const MAX_DESKS = 14;
 export const ACTIONS_PER_QUARTER = 2;
 
 const SALARY_PER_QUARTER = 45_000;
 const REVENUE_PER_EMPLOYEE = 34_000;
-const OFFICE_COST = 60_000;
 const CEO_PAY = 90_000;
 const LICENSE_COST = 1_500;
 
@@ -17,7 +26,7 @@ export interface Employee {
   role: string;
   quirk: string;
   moodOffset: number;
-  desk: number;
+  desk: number; // -1 = hot-desking (no desk)
   talkedQuarter: number;
 }
 
@@ -49,6 +58,9 @@ export interface GameState {
   savings: number;
   offshore: number;
   equity: number; // CEO's share of the company, 0..1
+  office: OfficeTier;
+  floors: number; // extra leased floors (open space only)
+  upgrades: string[];
   employees: Employee[];
   promises: PromiseItem[];
   actionsLeft: number;
@@ -118,6 +130,9 @@ export function loadGame(): GameState | null {
     s.promises ??= [];
     s.recentEvents ??= [];
     s.log ??= [];
+    s.office ??= "openspace";
+    s.floors ??= 0;
+    s.upgrades ??= [];
     nextId = Math.max(0, ...s.employees.map((e) => e.id)) + 1;
     return s;
   } catch {
@@ -145,20 +160,32 @@ function makeEmployee(desk: number, quarter: number): Employee {
   };
 }
 
+/** Where your next CEO gig starts depends on how the last one went. */
+function startingOffice(prev?: GameState): { office: OfficeTier; staff: number; cash: number } {
+  if (!prev) return { office: "openspace", staff: 10, cash: 3_000_000 };
+  if (prev.reputation >= 70) return { office: "openspace", staff: 10, cash: 3_500_000 };
+  if (prev.reputation >= 45) return { office: "cowork", staff: 6, cash: 1_800_000 };
+  return { office: "garage", staff: 3, cash: 700_000 };
+}
+
 export function newCompany(prev?: GameState): GameState {
+  const start = startingOffice(prev);
   const s: GameState = {
     company: `${pick(PREFIX)}${pick(SUFFIX)} Inc.`,
     product: pick(PRODUCTS),
     career: (prev?.career ?? 0) + 1,
     quarter: 1,
-    cash: 3_000_000,
+    cash: start.cash,
     morale: 60,
     hype: 50,
     suspicion: prev ? Math.round(prev.suspicion / 3) : 0,
     reputation: prev?.reputation ?? 60,
     savings: prev?.savings ?? 200_000,
     offshore: prev?.offshore ?? 0,
-    equity: 0.1,
+    equity: start.office === "garage" ? 0.3 : start.office === "cowork" ? 0.18 : 0.1,
+    office: start.office,
+    floors: 0,
+    upgrades: [],
     employees: [],
     promises: [],
     actionsLeft: ACTIONS_PER_QUARTER,
@@ -169,8 +196,13 @@ export function newCompany(prev?: GameState): GameState {
     recentEvents: [],
     log: [],
   };
-  for (let i = 0; i < 10; i++) s.employees.push(makeEmployee(i, 1));
-  log(s, prev ? `You land a new CEO gig at ${s.company}. Nobody checked your references.` : `Welcome, CEO of ${s.company} You make a ${s.product}.`);
+  for (let i = 0; i < start.staff; i++) s.employees.push(makeEmployee(i, 1));
+  log(
+    s,
+    prev
+      ? `You land a new CEO gig at ${s.company} (${OFFICES[s.office].name.toLowerCase()}). Nobody checked your references.`
+      : `Welcome, CEO of ${s.company} You make a ${s.product}.`,
+  );
   return s;
 }
 
@@ -189,13 +221,131 @@ export const fmt = (n: number) => {
 
 export const netWorth = (s: GameState) => s.savings + s.offshore;
 
+// ---------- office ----------
+
+export const office = (s: GameState) => OFFICES[s.office];
+
+export function capacity(s: GameState) {
+  return office(s).desks + (s.office === "openspace" ? s.floors * FLOOR_DESKS : 0);
+}
+
+export function maxHeadcount(s: GameState) {
+  return Math.min(MAX_HEADCOUNT, capacity(s) + HOT_DESK_OVERFLOW);
+}
+
+export function rent(s: GameState) {
+  return office(s).rent + (s.office === "openspace" ? s.floors * FLOOR_RENT : 0);
+}
+
+export const hotDeskers = (s: GameState) => s.employees.filter((e) => e.desk < 0).length;
+
+/** Give free desks to hot-deskers; evict people from desks that no longer exist. */
+export function compactDesks(s: GameState) {
+  const cap = capacity(s);
+  for (const e of s.employees) if (e.desk >= cap) e.desk = -1;
+  if (cap === Infinity) {
+    s.employees.forEach((e, i) => (e.desk = i));
+    return;
+  }
+  const used = new Set(s.employees.map((e) => e.desk));
+  let d = 0;
+  for (const e of s.employees.filter((x) => x.desk < 0)) {
+    while (d < cap && used.has(d)) d++;
+    if (d >= cap) break;
+    e.desk = d;
+    used.add(d);
+  }
+}
+
+const ownedUpgrades = (s: GameState) => s.upgrades.flatMap((id) => upgradeById(id) ?? []);
+
+export function upgradeCost(s: GameState, id: string) {
+  const u = upgradeById(id)!;
+  return u.perHead ? u.cost * Math.max(1, s.employees.length) : u.cost;
+}
+
+/** Why an upgrade can't be bought right now, or null if it can. */
+export function upgradeBlocker(s: GameState, id: string): string | null {
+  const u = upgradeById(id);
+  if (!u) return "Unknown";
+  if (s.upgrades.includes(id)) return "Owned";
+  if (s.office === "remote" && u.remote === "no") return "Needs an office";
+  if (s.office !== "remote" && u.remote === "only") return "Remote only";
+  if (s.upgrades.length >= office(s).upgradeSlots) return "No space left";
+  if (s.cash < upgradeCost(s, id)) return "Can't afford";
+  return null;
+}
+
+export function buyUpgrade(s: GameState, id: string) {
+  const u = upgradeById(id)!;
+  const cost = upgradeCost(s, id);
+  s.cash -= cost;
+  s.upgrades.push(id);
+  log(s, `Bought ${u.emoji} ${u.name} for ${fmt(cost)}. ${u.blurb}`);
+}
+
+export function moveBlocker(s: GameState, tier: OfficeTier): string | null {
+  const o = OFFICES[tier];
+  if (tier === s.office) return "You're here";
+  if (valuation(s) < o.minValuation) return `Landlord wants a ${fmt(o.minValuation)} valuation`;
+  if (s.cash < o.moveCost) return "Can't afford the move";
+  if (s.employees.length > o.desks + HOT_DESK_OVERFLOW) return "Too many people to cram in";
+  return null;
+}
+
+export function moveOffice(s: GameState, tier: OfficeTier) {
+  const from = office(s);
+  const to = OFFICES[tier];
+  s.cash -= to.moveCost;
+  const lost = s.upgrades.filter((id) => {
+    const u = upgradeById(id)!;
+    return tier === "remote" ? u.remote === "no" : u.remote === "only";
+  });
+  s.upgrades = s.upgrades.filter((id) => !lost.includes(id)).slice(0, to.upgradeSlots);
+  s.office = tier;
+  s.floors = 0;
+  for (const e of s.employees) e.desk = -1;
+  compactDesks(s);
+  if (tier === "remote") {
+    s.morale = clamp(s.morale + 6);
+    s.hype = clamp(s.hype - 4);
+    log(s, `Went remote-first. The office is now a Notion page. ${lost.length ? `Left behind: ${lost.map((id) => upgradeById(id)!.emoji).join(" ")}.` : ""}`);
+  } else if (to.rank > from.rank) {
+    s.hype = clamp(s.hype + 6 + to.rank * 2);
+    s.morale = clamp(s.morale + 4);
+    log(s, `Moved into a ${to.name.toLowerCase()} ${to.emoji}. LinkedIn post: "New chapter, same mission."`);
+  } else {
+    s.hype = clamp(s.hype - 8);
+    s.morale = clamp(s.morale - 6);
+    log(s, `Downsized to a ${to.name.toLowerCase()} ${to.emoji}. Officially "optimising our footprint".`);
+  }
+}
+
+export function floorBlocker(s: GameState): string | null {
+  if (s.office !== "openspace") return "Open-space offices only";
+  if (s.floors >= 1) return "No more floors available";
+  if (s.cash < FLOOR_COST) return "Can't afford the fit-out";
+  return null;
+}
+
+export function leaseFloor(s: GameState) {
+  s.cash -= FLOOR_COST;
+  s.floors++;
+  s.hype = clamp(s.hype + 5);
+  compactDesks(s);
+  log(s, `Leased the east wing (+${FLOOR_DESKS} desks). Facilities ordered ${FLOOR_DESKS} identical succulents.`);
+}
+
+// ---------- economy ----------
+
 export function quarterlyRevenue(s: GameState) {
-  return Math.round(s.employees.length * REVENUE_PER_EMPLOYEE * (0.4 + s.morale / 100));
+  const mult = 1 + ownedUpgrades(s).reduce((a, u) => a + u.revenue, 0) - (s.office === "remote" ? 0.03 : 0);
+  return Math.round(s.employees.length * REVENUE_PER_EMPLOYEE * (0.4 + s.morale / 100) * mult);
 }
 
 export function quarterlyCosts(s: GameState) {
   const n = s.employees.length;
-  return n * SALARY_PER_QUARTER + OFFICE_COST + CEO_PAY + Math.max(0, n - 1) * LICENSE_COST;
+  return n * SALARY_PER_QUARTER + rent(s) + CEO_PAY + Math.max(0, n - 1) * LICENSE_COST;
 }
 
 export function valuation(s: GameState) {
@@ -213,14 +363,12 @@ export function employeeMood(s: GameState, e: Employee) {
 }
 
 export function hire(s: GameState, count: number) {
-  const used = new Set(s.employees.map((e) => e.desk));
   let hired = 0;
-  for (let d = 0; d < MAX_DESKS && hired < count; d++) {
-    if (!used.has(d)) {
-      s.employees.push(makeEmployee(d, s.quarter));
-      hired++;
-    }
+  while (hired < count && s.employees.length < maxHeadcount(s)) {
+    s.employees.push(makeEmployee(-1, s.quarter));
+    hired++;
   }
+  compactDesks(s);
   return hired;
 }
 
@@ -230,6 +378,7 @@ export function removeEmployees(s: GameState, count: number): Employee[] {
     const idx = Math.floor(Math.random() * s.employees.length);
     gone.push(...s.employees.splice(idx, 1));
   }
+  compactDesks(s);
   return gone;
 }
 
@@ -253,6 +402,8 @@ export function describe(s: GameState) {
     `Employees: ${s.employees.length}. Morale ${s.morale}/100. Investor hype ${s.hype}/100. Board suspicion ${s.suspicion}/100.`,
     `Cash ${fmt(s.cash)}, runway ${runway === Infinity ? "profitable" : `${runway.toFixed(1)} quarters`}. Valuation ${fmt(valuation(s))}.`,
     `CEO secret offshore account: ${fmt(s.offshore)}. CEO reputation ${s.reputation}/100.`,
+    `Office: ${office(s).name}${s.floors ? " (+ extra floor)" : ""}, ${capacity(s) === Infinity ? "no desks" : `${capacity(s)} desks`}${hotDeskers(s) ? `, ${hotDeskers(s)} people have no desk and are hot-desking on beanbags` : ""}.`,
+    s.upgrades.length ? `Office perks the CEO bought: ${ownedUpgrades(s).map((u) => u.gossip).join(", ")}.` : "No office perks.",
     s.promises.length ? `Open CEO promises: ${s.promises.map((p) => `"${p.text}" due Q${p.dueQuarter}`).join("; ")}.` : "No open promises.",
     `Recent log: ${s.log.slice(0, 4).join(" | ")}`,
   ].join("\n");
@@ -288,10 +439,22 @@ export function endQuarter(s: GameState): QuarterReport {
   }
   s.promises = s.promises.filter((p) => p.dueQuarter > s.quarter);
 
-  // drift
-  s.morale = clamp(s.morale - 3);
-  s.hype = clamp(s.hype - 5 + (rev > cost ? 4 : 0));
+  // drift, office and perks
+  const perks = ownedUpgrades(s);
+  const perkMorale = perks.reduce((a, u) => a + u.morale, 0) + office(s).moralePerQ;
+  const perkHype = perks.reduce((a, u) => a + u.hype, 0) + office(s).hypePerQ;
+  s.morale = clamp(s.morale - 3 + perkMorale);
+  s.hype = clamp(s.hype - 5 + (rev > cost ? 4 : 0) + perkHype);
   s.suspicion = clamp(s.suspicion - 4);
+  if (perkMorale || perkHype) lines.push(`Office & perks: morale ${perkMorale >= 0 ? "+" : ""}${perkMorale}, hype ${perkHype >= 0 ? "+" : ""}${perkHype}.`);
+
+  // hot-desking
+  const homeless = hotDeskers(s);
+  if (homeless > 0) {
+    const pain = Math.min(12, homeless * 2);
+    s.morale = clamp(s.morale - pain);
+    lines.push(`${homeless} people still have no desk. The beanbag waitlist is a Jira board now. Morale -${pain}.`);
+  }
 
   // attrition
   if (s.morale < 25 && s.employees.length > 0) {

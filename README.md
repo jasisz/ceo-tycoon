@@ -15,6 +15,13 @@ npm run dev
 
 Without a key the game still runs with a dumb heuristic "mock GM". Progress autosaves to localStorage.
 
+## Offices
+
+Garage → coworking → open space (+ east wing) → glass campus, or go remote-first and run the
+company as a Zoom grid. Hire beyond your desks and people hot-desk on beanbags (morale tanks).
+The office shop sells perks with trade-offs (climbing wall, beer fridge, AI receptionist, valuation
+LED wall...), all visible in the office and known to the LLM's office gossip.
+
 ## How the LLM is wired in
 
 - `server/llm.ts` — game master: judges free-text actions (all-hands, investor pitch, 1:1s, custom

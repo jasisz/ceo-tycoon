@@ -4,7 +4,6 @@ import { OfficeScene } from "./scene/OfficeScene";
 import {
   ACTIONS_PER_QUARTER,
   FIRE_TARGET,
-  MAX_DESKS,
   PRODUCTS,
   applyEffects,
   canIPO,
@@ -25,9 +24,22 @@ import {
   removeEmployees,
   runwayQuarters,
   valuation,
+  capacity,
+  maxHeadcount,
+  hotDeskers,
+  rent,
+  office,
+  buyUpgrade,
+  upgradeBlocker,
+  upgradeCost,
+  moveBlocker,
+  moveOffice,
+  floorBlocker,
+  leaseFloor,
   type Effects,
   type GameState,
 } from "./game/state";
+import { FLOOR_COST, FLOOR_DESKS, FLOOR_RENT, OFFICES, UPGRADES, type OfficeTier, type UpgradeSpec } from "./game/office";
 
 // ---------- API ----------
 
@@ -90,7 +102,8 @@ function renderHud() {
       ${num("Cash", fmt(s.cash), s.cash < 500_000 ? "warn" : "")}
       ${num("Runway", runway === Infinity ? "∞" : `${runway.toFixed(1)}q`, runway < 3 ? "warn" : "")}
       ${num("Valuation", fmt(valuation(s)))}
-      ${num("Staff", `${s.employees.length}/${MAX_DESKS}`)}
+      ${num("Staff / desks", `${s.employees.length}/${capacity(s) === Infinity ? "∞" : capacity(s)}`, hotDeskers(s) ? "warn" : "")}
+      ${num("Office", `${office(s).emoji} ${office(s).name.split(" ")[0]}`)}
     </div>
     <div class="fire" title="Savings + offshore. Reach ${fmt(FIRE_TARGET)} to retire.">
       <span>FIRE ${fmt(netWorth(s))} / ${fmt(FIRE_TARGET)}</span>
@@ -109,6 +122,7 @@ interface Action {
   label: string;
   hint: string;
   cost?: string;
+  free?: boolean; // doesn't use up a decision
   enabled: () => boolean;
   run: () => Promise<void> | void;
 }
@@ -123,11 +137,20 @@ const ACTIONS: Action[] = [
     run: pitch,
   },
   { id: "layoff", label: "✂️ Lay off 10%", hint: "Investors: efficiency! Employees: fear.", enabled: () => s.employees.length > 1, run: layoffs },
-  { id: "hire", label: "🧑‍💻 Hire 2 people", hint: "Recruiting fees $40k", cost: "$40k", enabled: () => s.employees.length < MAX_DESKS, run: hireTwo },
+  {
+    id: "hire",
+    label: "🧑‍💻 Hire 2 people",
+    hint: "Recruiting fees $40k. Beyond your desk count, people hot-desk (morale penalty).",
+    cost: "$40k",
+    enabled: () => s.employees.length < maxHeadcount(s),
+    run: hireTwo,
+  },
   { id: "party", label: "🎉 Winter party", hint: "Once a year. $6k per head.", enabled: () => s.quarter - s.lastPartyQuarter >= 4, run: party },
   { id: "bonus", label: "💸 Promise a bonus", hint: "Morale now, bill in 2 quarters.", enabled: () => !s.promises.some((p) => p.text.startsWith("Bonus for everyone")), run: promiseBonus },
   { id: "pivot", label: "🔀 Pivot", hint: "New product. Hype up, morale down.", enabled: () => true, run: pivot },
   { id: "offshore", label: "🏝️ 'Consulting fee' to Zug", hint: "$250k to your offshore account. Suspicious.", enabled: () => s.cash > 250_000, run: offshore },
+  { id: "realestate", label: "🏢 Real estate", hint: "Move offices, lease another floor or go remote.", enabled: () => true, run: realEstate },
+  { id: "shop", label: "🛍️ Office shop", hint: "Perks for the office. Costs money, not a decision.", free: true, enabled: () => true, run: shop },
   { id: "ipo", label: "🔔 IPO", hint: "Q6+, valuation ≥ $60M. Cash out your equity.", enabled: () => canIPO(s), run: doIpo },
 ];
 
@@ -136,7 +159,7 @@ function renderActions() {
   $("#actions").innerHTML = `
     <h3>Decisions <small>${left}/${ACTIONS_PER_QUARTER} left this quarter</small></h3>
     ${ACTIONS.filter((a) => a.id !== "ipo" || canIPO(s))
-      .map((a) => `<button data-a="${a.id}" title="${esc(a.hint)}" ${busy || left <= 0 || !a.enabled() ? "disabled" : ""}>${a.label}</button>`)
+      .map((a) => `<button data-a="${a.id}" title="${esc(a.hint)}" ${busy || (left <= 0 && !a.free) || !a.enabled() ? "disabled" : ""}>${a.label}${a.free ? ' <small class="free">free</small>' : ""}</button>`)
       .join("")}
     <p class="tip">Click an employee for a 1:1 (free). Click yourself (sunglasses) for your finances — or to resign.</p>
     <button class="end" data-a="end" ${busy ? "disabled" : ""}>End quarter ▶</button>
@@ -148,6 +171,7 @@ function render() {
   renderHud();
   renderActions();
   renderLog();
+  scene?.setView({ tier: s.office, floors: s.floors, upgrades: s.upgrades, headcount: s.employees.length });
   scene?.sync(s.employees);
   scene?.setOffshore(s.offshore);
 }
@@ -157,7 +181,7 @@ $("#actions").addEventListener("click", async (e) => {
   if (!id || busy) return;
   if (id === "end") return nextQuarter();
   const a = ACTIONS.find((x) => x.id === id);
-  if (!a || !a.enabled() || s.actionsLeft <= 0) return;
+  if (!a || !a.enabled() || (s.actionsLeft <= 0 && !a.free)) return;
   await a.run();
   render();
 });
@@ -352,6 +376,7 @@ function hireTwo() {
   applyEffects(s, { morale: 2 });
   s.actionsLeft--;
   log(s, `Hired ${n} people. They ask where the free snacks are.`);
+  if (hotDeskers(s)) log(s, `${hotDeskers(s)} people have no desk. HR calls it "agile seating".`);
 }
 
 function party() {
@@ -395,6 +420,93 @@ async function doIpo() {
   ipo(s);
   render();
   await gameOver();
+}
+
+// ---------- real estate & office shop ----------
+
+function chip(text: string, kind: "good" | "bad" | "neutral") {
+  return `<span class="chip ${kind}">${esc(text)}</span>`;
+}
+
+function perQuarterChips(morale: number, hype: number, revenue = 0) {
+  return [
+    morale ? chip(`Morale ${morale > 0 ? "+" : ""}${morale}/q`, morale > 0 ? "good" : "bad") : "",
+    hype ? chip(`Hype ${hype > 0 ? "+" : ""}${hype}/q`, hype > 0 ? "good" : "bad") : "",
+    revenue ? chip(`Revenue ${revenue > 0 ? "+" : ""}${Math.round(revenue * 100)}%`, revenue > 0 ? "good" : "bad") : "",
+  ].join("");
+}
+
+async function realEstate() {
+  const here = office(s);
+  const cap = capacity(s);
+  const tiers: OfficeTier[] = ["garage", "cowork", "openspace", "campus", "remote"];
+  const cards = tiers
+    .map((t) => {
+      const o = OFFICES[t];
+      const block = moveBlocker(s, t);
+      return `<button class="choice" data-v="move:${t}" ${block ? "disabled" : ""}>
+        <b>${o.emoji} ${esc(o.name)}${t === s.office ? " (you are here)" : ""}</b>
+        <small>${esc(o.blurb)}</small>
+        <span>${chip(o.desks === Infinity ? "no desks" : `${o.desks} desks`, "neutral")}${chip(`rent ${fmt(o.rent)}/q`, "neutral")}${chip(`move ${fmt(o.moveCost)}`, "neutral")}${perQuarterChips(o.moralePerQ, o.hypePerQ)}${block && t !== s.office ? chip(block, "bad") : ""}</span>
+      </button>`;
+    })
+    .join("");
+  const fb = floorBlocker(s);
+  const floor =
+    s.office === "openspace"
+      ? `<button class="choice" data-v="floor" ${fb ? "disabled" : ""}>
+          <b>🏗️ Lease the east wing</b>
+          <small>Knock through a wall. +${FLOOR_DESKS} desks, +${fmt(FLOOR_RENT)}/q rent, ${fmt(FLOOR_COST)} fit-out.</small>
+          <span>${fb ? chip(fb, "bad") : chip("+5 hype", "good")}</span>
+        </button>`
+      : "";
+  const r = await modal(
+    `<h2>🏢 Real estate</h2>
+    <p class="sub">Now: ${here.emoji} ${esc(here.name)} · ${cap === Infinity ? "no desks" : `${cap} desks`} for ${s.employees.length} people · rent ${fmt(rent(s))}/q.
+    Moving uses a decision. Perks that don't fit the new place stay behind.</p>
+    <div class="choices">${floor}${cards}</div>`,
+    [{ label: "Stay put", value: "stay" }],
+  );
+  if (r.value === "floor" && !floorBlocker(s)) {
+    leaseFloor(s);
+  } else if (r.value.startsWith("move:")) {
+    const t = r.value.slice(5) as OfficeTier;
+    if (moveBlocker(s, t)) return;
+    moveOffice(s, t);
+  } else return;
+  s.actionsLeft--;
+  render();
+  scene.sparkle();
+}
+
+function upgradeCard(u: UpgradeSpec) {
+  const owned = s.upgrades.includes(u.id);
+  const block = upgradeBlocker(s, u.id);
+  const price = owned ? "✓ owned" : `${fmt(upgradeCost(s, u.id))}${u.perHead ? ` (${fmt(u.cost)}/head)` : ""}`;
+  return `<button class="choice" data-v="buy:${u.id}" ${block ? "disabled" : ""}>
+    <b>${u.emoji} ${esc(u.name)} <span class="price">${price}</span></b>
+    <small>${esc(u.blurb)}</small>
+    <span>${perQuarterChips(u.morale, u.hype, u.revenue)}${block && !owned ? chip(block, "neutral") : ""}</span>
+  </button>`;
+}
+
+async function shop() {
+  for (;;) {
+    const o = office(s);
+    const list = UPGRADES.filter((u) => (s.office === "remote" ? u.remote !== "no" : u.remote !== "only"));
+    const r = await modal(
+      `<h2>🛍️ Office shop</h2>
+      <p class="sub">${o.emoji} ${esc(o.name)} · ${s.upgrades.length}/${o.upgradeSlots} perk slots used · cash ${fmt(s.cash)}. Buying doesn't use a decision.</p>
+      <div class="choices">${list.map(upgradeCard).join("")}</div>`,
+      [{ label: "Done shopping", value: "close" }],
+    );
+    if (!r.value.startsWith("buy:")) return;
+    const id = r.value.slice(4);
+    if (upgradeBlocker(s, id)) continue;
+    buyUpgrade(s, id);
+    render();
+    scene.sparkle();
+  }
 }
 
 // ---------- 1:1 conversations ----------
@@ -594,7 +706,7 @@ async function intro() {
   await modal(
     `<p class="kicker">${s.career > 1 ? `Career move #${s.career}` : "Welcome aboard"}</p>
     <h2>You are the new CEO of ${esc(s.company)}</h2>
-    <p>The company makes a <b>${esc(s.product)}</b>. ${s.employees.length} employees, ${fmt(s.cash)} in the bank and a board that trusts you (for now).</p>
+    <p>The company makes a <b>${esc(s.product)}</b>. ${s.employees.length} employees, ${fmt(s.cash)} in the bank, a ${office(s).emoji} ${esc(office(s).name.toLowerCase())} and a board that trusts you (for now).</p>
     <p>Your official goal: grow the company. Your <i>actual</i> goal: <b>FIRE</b> — ${fmt(FIRE_TARGET)} of personal net worth.
     Get there with an honest IPO… or with creative “consulting fees” to a lovely little company in Zug. Just keep an eye on that suspicion bar.</p>
     <p class="sub">Tip: most things can be answered in your own words — the game master is an LLM and it is judging you.</p>`,
@@ -633,6 +745,7 @@ game.scene.add("office", OfficeScene, true, {
       const e = s.employees.find((x) => x.id === id);
       return e ? employeeMood(s, e) : 50;
     },
+    getValuation: () => fmt(valuation(s)),
     onReady: (sc: OfficeScene) => {
       scene = sc;
       render();
