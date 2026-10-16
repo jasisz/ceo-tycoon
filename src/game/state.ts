@@ -143,7 +143,6 @@ const QUIRKS = [
   "keeps a spreadsheet of every promise the CEO made",
   "thinks every problem can be solved with Kubernetes",
   "has never once turned the camera on",
-  "is the only one who understands the billing system",
   "brings their dog to every meeting, including remote ones",
   "believes this is a family",
   "posts motivational quotes on LinkedIn at 5am",

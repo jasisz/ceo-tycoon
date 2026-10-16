@@ -100,6 +100,13 @@ main { flex: 1; display: flex; min-height: 0; }
 .choice:hover:not(:disabled) { border-color: var(--accent); background: #f0f3ff; }
 .choice:disabled { opacity: .5; cursor: not-allowed; }
 .choice small { color: var(--muted); font-size: 12px; }
+.card h2 small { font-size: 14px; color: var(--muted); font-weight: 500; }
+.card.wide { width: min(860px, 100%); }
+.choices.team { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.choice.person { padding: 7px 10px; gap: 2px; font-size: 14px; }
+.choice.person small { font-size: 11.5px; }
+.choice.person .chip { font-size: 10px; }
+@media (max-width: 700px) { .choices.team { grid-template-columns: 1fr; } }
 .choice .price { float: right; font-weight: 600; color: var(--accent); font-size: 13px; }
 .narr { font-size: 15px; line-height: 1.45; }
 .quote { margin: 4px 0; padding-left: 10px; border-left: 3px solid var(--line); }

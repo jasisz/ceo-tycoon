@@ -216,6 +216,17 @@ const ACTIONS: Action[] = [
     run: promiseBonus,
   },
   {
+    id: "team",
+    group: "people",
+    icon: "👥",
+    label: "Team",
+    hint: "Everyone on payroll. Pick someone for a 1:1 (or to let go).",
+    free: true,
+    enabled: () => s.employees.length > 0,
+    sub: () => `${s.employees.length} people`,
+    run: team,
+  },
+  {
     id: "alumni",
     group: "people",
     icon: "📇",
@@ -311,9 +322,10 @@ interface Btn {
   primary?: boolean;
 }
 
-function modal(html: string, buttons: Btn[], opts: { input?: string } = {}): Promise<{ value: string; text: string }> {
+function modal(html: string, buttons: Btn[], opts: { input?: string; wide?: boolean } = {}): Promise<{ value: string; text: string }> {
   const m = $("#modal");
   const card = $("#modal-card");
+  card.classList.toggle("wide", !!opts.wide);
   card.innerHTML = `${html}
     ${opts.input !== undefined ? `<textarea id="m-input" rows="5" placeholder="${esc(opts.input)}"></textarea>` : ""}
     <div class="btns">${buttons.map((b, i) => `<button data-i="${i}" class="${b.primary ? "primary" : ""}">${esc(b.label)}</button>`).join("")}</div>`;
@@ -707,6 +719,46 @@ async function fire(e: Employee) {
   log(s, `Fired ${e.name}. Security walked them out with a box and a cactus.`);
   render();
   scene.layoffShock();
+}
+
+// ---------- team list ----------
+
+const moodFace = (m: number) => (m > 65 ? "😄" : m > 45 ? "🙂" : m > 30 ? "😐" : m > 15 ? "😠" : "🤬");
+
+async function team() {
+  // key people first, then the unhappiest - those are the ones worth a conversation
+  const people = [...s.employees].sort((a, b) => ownedBy(s, b.id).length - ownedBy(s, a.id).length || employeeMood(s, a) - employeeMood(s, b));
+  const rows = people.map((e) => {
+    const m = employeeMood(s, e);
+    const owns = ownedBy(s, e.id);
+    const tags = [
+      owns.length ? chip(owns.map((k) => `${SYSTEMS[k].emoji} ${SYSTEMS[k].name}`).join(" "), "neutral") : "",
+      e.contractor ? chip("💼 contractor", "neutral") : "",
+      e.desk < 0 && s.office !== "remote" ? chip("no desk", "bad") : "",
+      e.talkedQuarter === s.quarter ? chip("talked this Q", "neutral") : "",
+      s.promises.some((p) => p.text.includes(`(to ${e.name})`)) ? chip("📝 you owe them", "bad") : "",
+    ].join("");
+    return `<button class="choice person" data-v="talk:${e.id}">
+      <b>${moodFace(m)} ${esc(e.name)} <span class="price">${fmt(payOf(e))}/q</span></b>
+      <small>${esc(e.role)} · mood ${m} · ${esc(e.quirk)}</small>
+      ${tags ? `<span>${tags}</span>` : ""}
+    </button>`;
+  });
+  const r = await modal(
+    `<h2>👥 Team <small>${s.employees.length} people</small></h2>
+    <p class="sub">Key people first, then whoever is closest to quitting. Click someone for a 1:1.</p>
+    <div class="choices team">${rows.join("")}</div>`,
+    [
+      { label: `📇 Alumni (${s.alumni.length})`, value: "alumni" },
+      { label: "Close", value: "close" },
+    ],
+    { wide: true },
+  );
+  if (r.value === "alumni") return alumni();
+  if (!r.value.startsWith("talk:")) return;
+  const id = Number(r.value.slice(5));
+  scene.focus(id);
+  await talkTo(id);
 }
 
 // ---------- alumni ----------

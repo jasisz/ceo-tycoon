@@ -1471,6 +1471,15 @@ export class OfficeScene extends Phaser.Scene {
     });
   }
 
+  /** Make one person obvious: a hop and a pointer above their head. */
+  focus(id: number) {
+    const p = this.people.get(id);
+    if (!p) return;
+    this.tweens.add({ targets: p.body, y: -14, duration: 160, yoyo: true, repeat: 2, ease: "Quad.out" });
+    const arrow = this.txt(p.c.x, p.c.y - (this.remote ? 110 : 80), "👇", { fontSize: "20px" }).setOrigin(0.5).setDepth(59_000);
+    this.tweens.add({ targets: arrow, y: arrow.y + 8, duration: 300, yoyo: true, repeat: 3, onComplete: () => arrow.destroy() });
+  }
+
   layoffShock() {
     this.cameras.main.shake(300, 0.004);
     for (const p of this.people.values()) this.time.delayedCall(Math.random() * 800, () => this.emote(p.c, Phaser.Utils.Array.GetRandom(["😱", "😨", "👀"])));
