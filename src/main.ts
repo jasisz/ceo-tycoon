@@ -32,6 +32,9 @@ import {
   rent,
   office,
   buyUpgrade,
+  isOldNews,
+  perkEffect,
+  upkeepOf,
   upgradeBlocker,
   upgradeCost,
   moveBlocker,
@@ -71,7 +74,7 @@ import {
   type Effects,
   type GameState,
 } from "./game/state";
-import { FLOOR_COST, FLOOR_DESKS, FLOOR_RENT, OFFICES, UPGRADES, type OfficeTier, type UpgradeSpec } from "./game/office";
+import { FLOOR_COST, FLOOR_DESKS, FLOOR_RENT, NOVELTY_QUARTERS, OFFICES, UPGRADES, type OfficeTier, type UpgradeSpec } from "./game/office";
 
 // ---------- API ----------
 
@@ -684,10 +687,13 @@ function upgradeCard(u: UpgradeSpec) {
   const owned = s.upgrades.includes(u.id);
   const block = upgradeBlocker(s, u.id);
   const price = owned ? "✓ owned" : `${fmt(upgradeCost(s, u.id))}${u.perHead ? ` (${fmt(u.cost)}/head)` : ""}`;
+  const stale = owned && isOldNews(s, u.id);
+  const fx = owned ? perkEffect(s, u) : u;
+  const upkeep = upkeepOf(s, u);
   return `<button class="choice" data-v="buy:${u.id}" ${block ? "disabled" : ""}>
     <b>${u.emoji} ${esc(u.name)} <span class="price">${price}</span></b>
-    <small>${esc(u.blurb)}</small>
-    <span>${perQuarterChips(u.morale, u.hype, u.revenue)}${block && !owned ? chip(block, "neutral") : ""}</span>
+    <small>${esc(u.blurb)}${stale ? " <i>Old news: nobody notices it anymore.</i>" : ""}</small>
+    <span>${perQuarterChips(fx.morale, fx.hype, u.revenue)}${upkeep ? chip(`Upkeep ${fmt(upkeep)}/q`, "bad") : ""}${block && !owned ? chip(block, "neutral") : ""}</span>
   </button>`;
 }
 
@@ -697,7 +703,7 @@ async function shop() {
     const list = UPGRADES.filter((u) => (s.office === "remote" ? u.remote !== "no" : u.remote !== "only"));
     const r = await modal(
       `<h2>🛍️ Office shop</h2>
-      <p class="sub">${o.emoji} ${esc(o.name)} · ${s.upgrades.length}/${o.upgradeSlots} perk slots used · cash ${fmt(s.cash)}. Buying doesn't use a decision.</p>
+      <p class="sub">${o.emoji} ${esc(o.name)} · ${s.upgrades.length}/${o.upgradeSlots} perk slots used · cash ${fmt(s.cash)}. Buying doesn't use a decision. Upkeep adds to your burn; the novelty wears off after ${NOVELTY_QUARTERS} quarters.</p>
       <div class="choices">${list.map(upgradeCard).join("")}</div>`,
       [{ label: "Done shopping", value: "close" }],
     );

@@ -8,9 +8,11 @@ import {
   FLOOR_RENT,
   HOT_DESK_OVERFLOW,
   MAX_HEADCOUNT,
+  NOVELTY_QUARTERS,
   OFFICES,
   upgradeById,
   type OfficeTier,
+  type UpgradeSpec,
 } from "./office";
 
 export const FIRE_TARGET = 5_000_000;
@@ -20,7 +22,8 @@ export const IPO_VALUATION = 100_000_000;
 const REVENUE_PER_EMPLOYEE = 38_000;
 const CONTRACTOR_RATE = 3;
 const KEY_PERSON_PREMIUM = 20_000;
-const CEO_PAY = 90_000;
+/** Founders in a garage live on ramen; a campus CEO pays themselves like one. */
+export const ceoPay = (s: GameState) => OFFICES[s.office].ceoPay;
 const LICENSE_COST = 1_500;
 
 export interface Employee {
@@ -141,6 +144,7 @@ export interface GameState {
   office: OfficeTier;
   floors: number; // extra leased floors (open space only)
   upgrades: string[];
+  upgradeBought: Record<string, number>; // quarter each perk was bought, for the novelty to wear off
   employees: Employee[];
   promises: PromiseItem[];
   systems: Record<SystemId, SystemState>;
@@ -221,6 +225,7 @@ export function loadGame(): GameState | null {
     s.office ??= "openspace";
     s.floors ??= 0;
     s.upgrades ??= [];
+    s.upgradeBought ??= {};
     s.formerly ??= [];
     for (const e of s.employees) {
       e.salary ??= 45_000;
@@ -347,7 +352,7 @@ export function applyPeople(s: GameState, people: PersonEffect[] = []) {
 
 /** Where your next CEO gig starts depends on how the last one went. */
 function startingOffice(prev?: GameState): { office: OfficeTier; staff: number; cash: number } {
-  if (!prev) return { office: "openspace", staff: 10, cash: 3_000_000 };
+  if (!prev) return { office: "garage", staff: 3, cash: 600_000 };
   if (prev.reputation >= 70) return { office: "openspace", staff: 10, cash: 3_500_000 };
   if (prev.reputation >= 45) return { office: "cowork", staff: 6, cash: 1_800_000 };
   return { office: "garage", staff: 3, cash: 700_000 };
@@ -372,6 +377,7 @@ export function newCompany(prev?: GameState): GameState {
     office: start.office,
     floors: 0,
     upgrades: [],
+    upgradeBought: {},
     employees: [],
     promises: [],
     systems: freshSystems(),
@@ -461,6 +467,17 @@ export function compactDesks(s: GameState) {
 
 const ownedUpgrades = (s: GameState) => s.upgrades.flatMap((id) => upgradeById(id) ?? []);
 
+/** Per-quarter morale/hype of a perk: full while it's new, then the upside halves. The downsides never fade. */
+export function perkEffect(s: GameState, u: UpgradeSpec) {
+  const old = isOldNews(s, u.id);
+  const fade = (v: number) => (old && v > 0 ? Math.floor(v / 2) : v);
+  return { morale: fade(u.morale), hype: fade(u.hype) };
+}
+
+export const isOldNews = (s: GameState, id: string) => s.quarter - (s.upgradeBought[id] ?? 0) >= NOVELTY_QUARTERS;
+
+export const upkeepOf = (s: GameState, u: UpgradeSpec) => (u.perHead ? u.upkeep * s.employees.length : u.upkeep);
+
 export function upgradeCost(s: GameState, id: string) {
   const u = upgradeById(id)!;
   return u.perHead ? u.cost * Math.max(1, s.employees.length) : u.cost;
@@ -483,6 +500,7 @@ export function buyUpgrade(s: GameState, id: string) {
   const cost = upgradeCost(s, id);
   s.cash -= cost;
   s.upgrades.push(id);
+  s.upgradeBought[id] = s.quarter;
   log(s, `Bought ${u.emoji} ${u.name} for ${fmt(cost)}. ${u.blurb}`);
 }
 
@@ -558,7 +576,8 @@ export const payOf = (e: Employee) => e.salary * (e.contractor ? CONTRACTOR_RATE
 
 export function quarterlyCosts(s: GameState) {
   const n = s.employees.length;
-  return s.employees.reduce((a, e) => a + payOf(e), 0) + rent(s) + CEO_PAY + Math.max(0, n - 1) * LICENSE_COST;
+  const perks = ownedUpgrades(s).reduce((a, u) => a + upkeepOf(s, u), 0);
+  return s.employees.reduce((a, e) => a + payOf(e), 0) + rent(s) + perks + ceoPay(s) + Math.max(0, n - 1) * LICENSE_COST;
 }
 
 export function valuation(s: GameState) {
@@ -723,7 +742,7 @@ export function describe(s: GameState) {
     `Cash ${fmt(s.cash)}, runway ${runway === Infinity ? "profitable" : `${runway.toFixed(1)} quarters`}. Valuation ${fmt(valuation(s))}.`,
     `CEO secret offshore account: ${fmt(s.offshore)}. CEO reputation ${s.reputation}/100.`,
     `Office: ${office(s).name}${s.floors ? " (+ extra floor)" : ""}, ${capacity(s) === Infinity ? "no desks" : `${capacity(s)} desks`}${hotDeskers(s) ? `, ${hotDeskers(s)} people have no desk and are hot-desking on beanbags` : ""}.`,
-    s.upgrades.length ? `Office perks the CEO bought: ${ownedUpgrades(s).map((u) => u.gossip).join(", ")}.` : "No office perks.",
+    s.upgrades.length ? `Office perks the CEO bought: ${ownedUpgrades(s).map((u) => (isOldNews(s, u.id) ? `${u.gossip} (old news, nobody cares anymore)` : `${u.gossip} (new)`)).join(", ")}.` : "No office perks.",
     s.promises.length ? `Open CEO promises: ${s.promises.map((p) => `"${p.text}" due Q${p.dueQuarter}`).join("; ")}.` : "No open promises.",
     `Systems: ${SYSTEM_IDS.map((k) => {
       const o = s.employees.find((e) => e.id === s.systems[k].owner);
@@ -756,9 +775,9 @@ export function endQuarter(s: GameState): QuarterReport {
   const rev = quarterlyRevenue(s);
   const cost = quarterlyCosts(s);
   s.cash += rev - cost;
-  s.savings += CEO_PAY;
+  s.savings += ceoPay(s);
   s.lastRevenue = rev;
-  lines.push(`Revenue ${fmt(rev)}, costs ${fmt(cost)} (incl. your ${fmt(CEO_PAY)} salary).`);
+  lines.push(`Revenue ${fmt(rev)}, costs ${fmt(cost)} (incl. your ${fmt(ceoPay(s))} salary).`);
 
   // promises come due
   for (const p of s.promises.filter((p) => p.dueQuarter <= s.quarter)) {
@@ -790,8 +809,8 @@ export function endQuarter(s: GameState): QuarterReport {
 
   // drift, office and perks
   const perks = ownedUpgrades(s);
-  const perkMorale = perks.reduce((a, u) => a + u.morale, 0) + office(s).moralePerQ;
-  const perkHype = perks.reduce((a, u) => a + u.hype, 0) + office(s).hypePerQ;
+  const perkMorale = perks.reduce((a, u) => a + perkEffect(s, u).morale, 0) + office(s).moralePerQ;
+  const perkHype = perks.reduce((a, u) => a + perkEffect(s, u).hype, 0) + office(s).hypePerQ;
   s.morale = clamp(s.morale - 3 + perkMorale);
   s.hype = clamp(s.hype - 5 + (rev > cost ? 4 : 0) + perkHype);
   s.suspicion = clamp(s.suspicion - 4);
