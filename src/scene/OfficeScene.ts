@@ -84,6 +84,7 @@ export class OfficeScene extends Phaser.Scene {
   private tooltip!: Phaser.GameObjects.Text;
   private ceo!: Phaser.GameObjects.Container;
   private dog!: { c: Phaser.GameObjects.Container; g: Pt; walking: boolean };
+  private visitors: Person[] = [];
   private res = 1;
 
   constructor() {
@@ -132,6 +133,7 @@ export class OfficeScene extends Phaser.Scene {
 
   update(time: number) {
     for (const p of this.people.values()) this.animatePerson(p, time);
+    for (const p of this.visitors) this.animatePerson(p, time);
     if (this.dog?.walking) {
       const s = Math.sin(time / 60);
       (this.dog.c.getAt(1) as Phaser.GameObjects.Container).y = Math.abs(s) * -2;
@@ -317,6 +319,7 @@ export class OfficeScene extends Phaser.Scene {
     // desks with monitors, chairs and random clutter
     const screens = [0x3a86ff, 0x06d6a0, 0x8338ec, 0xff006e, 0x2b2d42];
     DESKS.forEach(([x, y], i) => {
+      this.chair(x + 0.55, y + 0.95, [0xef476f, 0x118ab2, 0x06d6a0, 0x8338ec][i % 4]);
       this.box(x, y, 1.1, 0.6, 16, 0xffffff);
       const mon = this.box(x + 0.35, y + 0.05, 0.42, 0.08, 16, screens[i % screens.length], 16);
       mon.setDepth(this.iso(x + 0.55, y + 0.3).y + 0.5);
@@ -339,6 +342,69 @@ export class OfficeScene extends Phaser.Scene {
     this.ceo.on("pointerover", () => this.showTip(this.ceo, "You, the CEO. Click for your secret finances 🕶️"));
     this.ceo.on("pointerout", () => this.hideTip());
     this.tweens.add({ targets: this.ceo, angle: { from: -3, to: 3 }, duration: 1400, yoyo: true, repeat: -1, ease: "Sine.inOut" });
+    this.setOffshore(0);
+  }
+
+  private chair(gx: number, gy: number, color: number) {
+    const p = this.iso(gx, gy);
+    const g = this.add.graphics().setDepth(p.y + 0.4);
+    g.lineStyle(2, INK, 0.9);
+    for (const a of [0, 1.26, 2.51, 3.77, 5.03]) g.lineBetween(p.x, p.y - 2, p.x + Math.cos(a) * 9, p.y - 2 + Math.sin(a) * 4);
+    g.lineBetween(p.x, p.y - 2, p.x, p.y - 9);
+    g.fillStyle(this.shade(color, 0.8)).fillRoundedRect(p.x - 9, p.y - 34, 18, 20, 6).lineStyle(1.5, INK).strokeRoundedRect(p.x - 9, p.y - 34, 18, 20, 6);
+    g.fillStyle(color).fillEllipse(p.x, p.y - 11, 22, 9).strokeEllipse(p.x, p.y - 11, 22, 9);
+  }
+
+  // ---------- the "totally normal office safe" that grows with the offshore account ----------
+
+  private safe?: Phaser.GameObjects.Container;
+  private safeAmount = -1;
+
+  setOffshore(amount: number) {
+    if (amount === this.safeAmount) return;
+    const grew = this.safeAmount >= 0 && amount > this.safeAmount;
+    this.safeAmount = amount;
+    this.safe?.destroy();
+    const gx = 0.25, gy = 8.9;
+    const h = 20 + Math.min(70, (amount / 1_000_000) * 18);
+    const g = this.box(gx, gy, 0.7, 0.7, h, 0x6c757d);
+    const top = this.iso(gx + 0.35, gy + 0.35);
+    const front = this.iso(gx + 0.35, gy + 0.7);
+    const dial = this.add.graphics();
+    dial.fillStyle(0xffd166).fillCircle(front.x - 9, front.y - h / 2, 4).lineStyle(1.5, INK).strokeCircle(front.x - 9, front.y - h / 2, 4);
+    const sign = this.txt(front.x - 9, front.y - h / 2 - 12, "Zug", { fontFamily: "Impact, sans-serif", fontSize: "7px", color: "#ffd166" }).setOrigin(0.5);
+    const items: Phaser.GameObjects.GameObject[] = [g, dial, sign];
+    const bags = Math.min(6, Math.floor(amount / 250_000));
+    for (let i = 0; i < bags; i++) {
+      items.push(this.txt(top.x - 10 + (i % 3) * 10, top.y - h - 6 - Math.floor(i / 3) * 9, "💰", { fontSize: "11px" }).setOrigin(0.5));
+    }
+    this.safe = this.add.container(0, 0, items).setDepth(top.y + 1);
+    const zone = this.add.zone(top.x, top.y - h / 2, 40, h + 20).setInteractive();
+    this.safe.add(zone);
+    zone.on("pointerover", () => {
+      this.tooltip.setText(amount ? `Totally normal office safe · ${(amount / 1e6).toFixed(2)}M of "consulting"` : "Totally normal, empty office safe").setPosition(top.x + 20, top.y - h - 30).setVisible(true);
+    });
+    zone.on("pointerout", () => this.hideTip());
+    if (grew) this.tweens.add({ targets: this.safe, scaleY: { from: 0.9, to: 1 }, duration: 300, ease: "Back.out" });
+  }
+
+  /** Banknotes fly from the open space into the safe. */
+  moneyFly() {
+    const to = this.iso(0.6, 9.2);
+    for (let i = 0; i < 14; i++) {
+      const from = this.iso(6 + Math.random() * 5, 3 + Math.random() * 5);
+      const t = this.txt(from.x, from.y - 30, "💸", { fontSize: "14px" }).setOrigin(0.5).setDepth(57_000);
+      this.tweens.add({
+        targets: t,
+        x: to.x,
+        y: to.y - 50,
+        angle: Phaser.Math.Between(-200, 200),
+        delay: i * 90,
+        duration: 1100,
+        ease: "Cubic.in",
+        onComplete: () => t.destroy(),
+      });
+    }
   }
 
   // ---------- characters ----------
@@ -533,9 +599,9 @@ export class OfficeScene extends Phaser.Scene {
       p.legR.y = -Math.sin(t) * 2.5;
       p.body.y = -Math.abs(Math.sin(t)) * 2.5;
     } else if (p.seated) {
-      p.legL.y = p.legR.y = 0;
+      p.legL.y = p.legR.y = -3;
       const typing = p.lastMood > 30;
-      p.body.y = typing ? Math.sin(t * 2.2) * 0.6 : 1 + Math.sin(time / 600 + p.phase); // slumped & breathing when demotivated
+      p.body.y = 4 + (typing ? Math.sin(t * 2.2) * 0.6 : 1.5 + Math.sin(time / 600 + p.phase)); // sunk into the chair; slumped when demotivated
     } else {
       p.legL.y = p.legR.y = 0;
       p.body.y = Math.sin(time / 500 + p.phase) * 0.6;
@@ -554,7 +620,7 @@ export class OfficeScene extends Phaser.Scene {
     return pts.filter((q, i, arr) => Math.hypot(q.x - (i ? arr[i - 1].x : from.x), q.y - (i ? arr[i - 1].y : from.y)) > 0.05);
   }
 
-  private walkTo(p: Person, to: Pt, done?: () => void) {
+  private walkTo(p: Person, to: Pt, done?: () => void, msPerTile = 380) {
     p.timer?.remove();
     this.tweens.killTweensOf(p.g);
     p.seated = false;
@@ -575,7 +641,7 @@ export class OfficeScene extends Phaser.Scene {
         targets: p.g,
         x: q.x,
         y: q.y,
-        duration: Math.max(120, dist * 380),
+        duration: Math.max(120, dist * msPerTile),
         onUpdate: () => this.place(p),
         onComplete: () => step(i + 1),
       });
@@ -767,6 +833,65 @@ export class OfficeScene extends Phaser.Scene {
     }
     for (const p of this.people.values()) this.time.delayedCall(Math.random() * 1500, () => this.emote(p.c, Phaser.Utils.Array.GetRandom(["🎉", "🍻", "🕺", "💃", "🥳"])));
     this.gather();
+  }
+
+  // ---------- investors visiting for a pitch ----------
+
+  /** Resolves once all investors are standing in the meeting room. */
+  investorsArrive(): Promise<void> {
+    this.investorsLeave(false, true);
+    const arrivals: Promise<void>[] = [];
+    const spots: Pt[] = [{ x: 1.3, y: 0.8 }, { x: 2.3, y: 0.7 }, { x: 3.3, y: 1.2 }];
+    const vests = [0x4a4e69, 0x22223b, 0x9a8c98];
+    spots.forEach((spot, i) => {
+      const f = this.makeFigure({ shirt: vests[i], pants: 0xc9ada7, skin: SKIN[(i * 2) % SKIN.length], hair: HAIR[[5, 3, 0][i]], style: (["bald", "bowl", "spiky"] as const)[i], acc: "glasses" });
+      this.drawMouth(f.face, 50);
+      const p: Person = {
+        data: { id: -1 - i, name: "Investor", role: "VC", quirk: "", moodOffset: 0, desk: 0, talkedQuarter: 0 },
+        ...f,
+        skin: 0,
+        g: { x: DOOR[0], y: DOOR[1] },
+        walking: false,
+        seated: false,
+        phase: i,
+        lastMood: 50,
+      };
+      f.c.setInteractive(new Phaser.Geom.Rectangle(-14, -56, 28, 58), Phaser.Geom.Rectangle.Contains);
+      f.c.on("pointerover", () => this.showTip(f.c, ["Partner · fleece vest, 3 board seats", "Associate · has read one book about blitzscaling", "Managing Partner · asks about TAM, then about AI"][i]));
+      f.c.on("pointerout", () => this.hideTip());
+      this.visitors.push(p);
+      this.place(p);
+      arrivals.push(
+        new Promise((resolve) =>
+          this.time.delayedCall(i * 250, () =>
+            this.walkTo(
+              p,
+              spot,
+              () => {
+                p.body.scaleX = 1;
+                this.emote(p.c, ["🧐", "📱", "🥤"][i]);
+                resolve();
+              },
+              150,
+            ),
+          ),
+        ),
+      );
+    });
+    return Promise.all(arrivals).then(() => undefined);
+  }
+
+  investorsLeave(happy: boolean, instant = false) {
+    const leaving = this.visitors;
+    this.visitors = [];
+    leaving.forEach((p, i) => {
+      if (instant) return p.c.destroy();
+      this.drawMouth(p.face, happy ? 90 : 20);
+      this.emote(p.c, happy ? "🤑" : "🥱");
+      this.time.delayedCall(1200 + i * 300, () =>
+        this.walkTo(p, { x: DOOR[0], y: DOOR[1] }, () => this.tweens.add({ targets: p.c, alpha: 0, duration: 400, onComplete: () => p.c.destroy() })),
+      );
+    });
   }
 
   layoffShock() {

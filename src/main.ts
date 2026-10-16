@@ -144,6 +144,7 @@ function render() {
   renderActions();
   renderLog();
   scene?.sync(s.employees);
+  scene?.setOffshore(s.offshore);
 }
 
 $("#actions").addEventListener("click", async (e) => {
@@ -299,8 +300,9 @@ async function pitch() {
   );
   if (r.value !== "go") return;
   await withBusy(async () => {
+    const arrived = scene.investorsArrive();
     loading("Investors are nodding thoughtfully...");
-    const j = await judged("investors", r.text);
+    const [j] = await Promise.all([judged("investors", r.text), arrived]);
     applyEffects(s, j.deltas);
     addPromises(j);
     s.actionsLeft--;
@@ -312,9 +314,11 @@ async function pitch() {
       s.equity *= 0.85;
       extra = `<p class="big good">💰 Raised ${fmt(raised)}! Your equity is diluted to ${(s.equity * 100).toFixed(1)}%.</p>`;
       log(s, `Raised ${fmt(raised)} from investors.`);
+      scene.investorsLeave(true);
     } else {
       extra = `<p class="big bad">🚪 "We'll circle back." They will not circle back.</p>`;
       log(s, "Investors passed.");
+      scene.investorsLeave(false);
     }
     await modal(judgementHtml("Pitch result", j, extra), [{ label: "OK", value: "ok" }]);
   });
@@ -376,6 +380,7 @@ function offshore() {
   s.actionsLeft--;
   log(s, `Paid a $250k "strategic consulting" invoice to a company in Zug.`);
   scene.ceoBubble("Strategic consulting. Very strategic.");
+  scene.moneyFly();
 }
 
 async function doIpo() {
