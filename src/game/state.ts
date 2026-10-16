@@ -14,6 +14,7 @@ import {
   type OfficeTier,
   type UpgradeSpec,
 } from "./office";
+import { describeLifestyle, expenseSuspicion, lifestyleById, lifestyleEffects, type Owned, type Payer } from "./lifestyle";
 import { bureaucracyDrag, ceoSpan, delegates, teamOutput, cSuiteHype, CEO_SPAN, describeOrg, orphanReports, placeHire, reportsOf, stepOrg, titleOf, type Title } from "./org";
 
 export const FIRE_TARGET = 5_000_000;
@@ -164,6 +165,8 @@ export interface GameState {
   liquidationPref: number; // paid to investors before you see a cent on exit
   guarantee: number; // what you personally owe if the company dies
   ceoSalary: number; // per quarter, set by you
+  lifestyle: Owned[]; // what the CEO bought, and who paid
+  expensed: number; // lifestyle put on this company's card, not yet found by auditors
   cfo?: string; // the board's CFO, if they appointed one
   payFrozenUntil?: number; // the board froze your salary until this quarter
   lastBoardVote: number;
@@ -244,6 +247,8 @@ export function loadGame(): GameState | null {
     s.lastMediaQuarter ??= -10;
     s.lastBoardVote ??= 0;
     s.ceoSalary ??= 20_000;
+    s.lifestyle ??= [];
+    s.expensed ??= 0;
     s.guarantee ??= 0;
     s.formerly ??= [];
     for (const e of s.employees) {
@@ -410,7 +415,10 @@ export function newCompany(prev?: GameState): GameState {
     liquidationPref: 0,
     guarantee: 0,
     lastBoardVote: 0,
-    ceoSalary: 20_000,
+    ceoSalary: prev?.ceoSalary ?? 20_000,
+    // the car and the penthouse come with you; the old company's card doesn't
+    lifestyle: (prev?.lifestyle ?? []).map((o) => ({ ...o, payer: "self" as const })),
+    expensed: 0,
     audits: 0,
     zugTransfers: 0,
     actionsLeft: ACTIONS_PER_QUARTER,
@@ -606,6 +614,7 @@ export function costBreakdown(s: GameState) {
     rent: rent(s),
     perks: ownedUpgrades(s).reduce((a, u) => a + upkeepOf(s, u), 0),
     you: ceoPay(s),
+    lifestyle: lifestyleUpkeep(s, "company"),
     saas: Math.max(0, s.employees.length - 1) * LICENSE_COST,
   };
 }
@@ -680,6 +689,50 @@ export function hireCandidate(
     break;
   }
   return e;
+}
+
+export const lifestyleUpkeep = (s: GameState, payer: Payer) =>
+  s.lifestyle.filter((o) => o.payer === payer).reduce((a, o) => a + (lifestyleById(o.id)?.upkeep ?? 0), 0);
+
+/** Why the CEO can't buy this right now, or null. */
+export function lifestyleBlocker(s: GameState, id: string, payer: Payer): string | null {
+  const it = lifestyleById(id);
+  if (!it) return "Unknown";
+  if (s.lifestyle.some((o) => o.id === id)) return "Owned";
+  if (payer === "self" && s.savings < it.cost) return "Your savings say no";
+  if (payer === "company" && s.cash < it.cost * 2) return "Even you can't justify it now";
+  return null;
+}
+
+/** Buy something nice. Returns what happened, for the result screen. */
+export function buyLifestyle(s: GameState, id: string, payer: Payer): string[] {
+  const it = lifestyleById(id)!;
+  const out: string[] = [];
+  s.lifestyle.push({ id, quarter: s.quarter, payer });
+  s.hype = clamp(s.hype + it.hype);
+  s.reputation = clamp(s.reputation + it.reputation);
+  s.morale = clamp(s.morale + it.morale);
+  if (payer === "self") {
+    s.savings -= it.cost;
+    log(s, `Bought ${it.emoji} ${it.name} for ${fmt(it.cost)} of your own money. FIRE just got a little further away.`);
+    out.push(`${fmt(it.cost)} out of your savings.`);
+  } else {
+    const susp = expenseSuspicion(s, it);
+    s.cash -= it.cost;
+    s.expensed += it.cost;
+    s.suspicion = clamp(s.suspicion + susp);
+    log(s, `Expensed ${it.emoji} ${it.name} (${fmt(it.cost)}) to the company card as "client development".`);
+    out.push(`${fmt(it.cost)} on the company card. Suspicion +${susp}.`);
+    if (Math.random() < 0.35) {
+      const who = s.employees.find((e) => ownedBy(s, e.id).includes("billing")) ?? pick(s.employees);
+      if (who) {
+        remember(who, s.quarter, `Saw the receipt: the CEO expensed ${it.gossip} to the company.`);
+        s.morale = clamp(s.morale - 4);
+        out.push(`${who.name} saw the receipt. By lunch, so had everyone. Morale −4.`);
+      }
+    }
+  }
+  return out;
 }
 
 /** Pay yourself a new salary. Everyone hears about a big raise (or a cut to zero). */
@@ -896,6 +949,7 @@ export function describe(s: GameState) {
     `CEO secret offshore account: ${fmt(s.offshore)}. CEO reputation ${s.reputation}/100.`,
     `Office: ${office(s).name}${s.floors ? " (+ extra floor)" : ""}, ${capacity(s) === Infinity ? "no desks" : `${capacity(s)} desks`}${hotDeskers(s) ? `, ${hotDeskers(s)} people have no desk and are hot-desking on beanbags` : ""}.`,
     describeOrg(s),
+    describeLifestyle(s),
     s.cfo && s.employees.some((e) => e.name === s.cfo) ? `${s.cfo} is the CFO the board appointed over the CEO's objection; he reports every outgoing payment to the board.` : "",
     (s.payFrozenUntil ?? 0) > s.quarter ? `The board froze the CEO's salary until Q${s.payFrozenUntil}.` : `The CEO pays themselves ${fmt(s.ceoSalary)} a quarter (a board would call ~${fmt(fairCeoPay(s))} reasonable here).`,
     s.upgrades.length ? `Office perks the CEO bought: ${ownedUpgrades(s).map((u) => (isOldNews(s, u.id) ? `${u.gossip} (old news, nobody cares anymore)` : `${u.gossip} (new)`)).join(", ")}.` : "No office perks.",
@@ -972,6 +1026,18 @@ export function endQuarter(s: GameState): QuarterReport {
   s.hype = clamp(s.hype - 5 + (rev > cost ? 4 : 0) + perkHype + cSuiteHype(s));
   lines.push(...stepOrg(s, (e) => employeeMood(s, e)));
   lines.push(...stepCeoPay(s));
+  const lf = lifestyleEffects(s);
+  if (lf.hype || lf.morale || lf.reputation) {
+    s.hype = clamp(s.hype + lf.hype);
+    s.morale = clamp(s.morale + lf.morale);
+    s.reputation = clamp(s.reputation + lf.reputation);
+    lines.push(`Your lifestyle: hype ${lf.hype >= 0 ? "+" : ""}${lf.hype}, morale ${lf.morale >= 0 ? "+" : ""}${lf.morale}${lf.reputation ? `, reputation +${lf.reputation}` : ""}.`);
+  }
+  const own = lifestyleUpkeep(s, "self");
+  if (own) {
+    s.savings -= own;
+    lines.push(`Your lifestyle cost you ${fmt(own)} of your own savings this quarter.`);
+  }
   s.suspicion = clamp(s.suspicion - 4);
   if (perkMorale || perkHype) lines.push(`Office & perks: morale ${perkMorale >= 0 ? "+" : ""}${perkMorale}, hype ${perkHype >= 0 ? "+" : ""}${perkHype}.`);
 
@@ -1010,6 +1076,14 @@ export function endQuarter(s: GameState): QuarterReport {
         text: `Auditors followed the money to your offshore account (${fmt(s.offshore)}).${whistleblower ? " Someone had kept copies of the invoices." : ""} You get a Netflix documentary instead of FIRE.`,
       };
       return { lines, gone };
+    }
+    if (s.expensed > 0 && Math.random() < Math.min(0.6, s.expensed / 400_000)) {
+      const repay = Math.min(s.savings, s.expensed);
+      s.savings -= repay;
+      s.reputation = clamp(s.reputation - 10);
+      s.boardDemands.push(`Auditors found ${fmt(s.expensed)} of personal lifestyle on the company card.`);
+      lines.push(`🧾 The auditors found your expenses (${fmt(s.expensed)}). You repay ${fmt(repay)} from your savings, and the board wants a word.`);
+      s.expensed = 0;
     }
     s.suspicion = clamp(s.suspicion - 10);
     s.hype = clamp(s.hype - 12);
@@ -1060,6 +1134,10 @@ export function endQuarter(s: GameState): QuarterReport {
   } else if (delegates(s, (e) => employeeMood(s, e))) {
     s.actionsLeft++;
     lines.push(`🧭 Your managers run their teams without you. You get an extra decision next quarter.`);
+  }
+  if (lifestyleEffects(s).decisions) {
+    s.actionsLeft += lifestyleEffects(s).decisions;
+    lines.push("🛩️ The jet puts you in two cities a day: one extra decision.");
   }
   return { lines, gone };
 }

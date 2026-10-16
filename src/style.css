@@ -241,3 +241,12 @@ main { flex: 1; display: flex; min-height: 0; }
 .pay-row button { font: inherit; font-size: 12px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; background: #fff; cursor: pointer; }
 .pay-row button:hover { border-color: var(--accent); background: #f0f3ff; }
 #ceo-pay { font: inherit; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; }
+
+.choice.ls { cursor: default; }
+.choice.ls.owned { opacity: .7; }
+.ls-pay { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+.ls-pay button { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; cursor: pointer; }
+.ls-pay button:hover:not(:disabled) { border-color: var(--accent); background: #f0f3ff; }
+.ls-pay button:disabled { opacity: .45; cursor: not-allowed; }
+.ls-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 700px) { .ls-grid { grid-template-columns: 1fr; } }

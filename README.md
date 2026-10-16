@@ -55,6 +55,9 @@ downsides stay).
 - **The board** meets every 4 quarters with a motion of its own: appoint a CFO who watches every
   payment, freeze your salary, cut staff, sell the perks, or a vote of no confidence. You argue, they
   vote, the engine enacts it. Every board seat you traded for money is a vote against you.
+- **Lifestyle**: a vest, a watch, a Lambo, a penthouse, an ayahuasca retreat. Pay from your own savings
+  (FIRE slips away) or put it on the company card (suspicion, someone in finance sees the receipt, and
+  auditors who find it make you pay it back). Investors like a CEO who looks successful; the team doesn't.
 - **Media**: podcasts, a journalist who asks about whatever she's heard (Zug included), LinkedIn
   posts, paid features. The team reads it too.
 

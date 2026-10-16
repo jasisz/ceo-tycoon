@@ -33,6 +33,8 @@ import {
   office,
   buyUpgrade,
   closeRound,
+  buyLifestyle,
+  lifestyleBlocker,
   adjustPay,
   CEO_SALARY_STEPS,
   fairCeoPay,
@@ -91,6 +93,7 @@ import {
   type GameState,
 } from "./game/state";
 import { applyReorg, CEO_SPAN, ceoSpan, delegates, HEALTHY_DEPTH, MANAGER_SPAN, managerOf, orgDepth, reportsOf, TITLE_IDS, TITLES, titleOf, wouldCycle, type OrgChange, type Title } from "./game/org";
+import { expenseSuspicion, LIFESTYLE, type Payer } from "./game/lifestyle";
 import { BOARD_EVERY, boardMembers, enactMotion, pickMotion, rememberVote, tally } from "./game/board";
 import { FLOOR_COST, FLOOR_DESKS, FLOOR_RENT, NOVELTY_QUARTERS, OFFICES, UPGRADES, type OfficeTier, type UpgradeSpec } from "./game/office";
 
@@ -325,6 +328,17 @@ const ACTIONS: Action[] = [
     enabled: () => s.cash > ZUG_SCHEMES.retreat.amount,
     sub: () => `suspicion +${zugSuspicion(s)}ish · stash ${fmt(s.offshore)}`,
     run: offshore,
+  },
+  {
+    id: "lifestyle",
+    group: "shady",
+    icon: "💳",
+    label: "Lifestyle",
+    hint: "Things a CEO 'needs'. Pay with your own savings (FIRE slips away) or the company card (suspicion, receipts, auditors). Investors like a CEO who looks successful; the team doesn't.",
+    free: true,
+    enabled: () => true,
+    sub: () => (s.expensed ? `${fmt(s.expensed)} expensed` : "free action"),
+    run: lifestyleShop,
   },
 ];
 
@@ -1013,6 +1027,51 @@ async function doIpo() {
   await gameOver();
 }
 
+// ---------- CEO lifestyle ----------
+
+async function lifestyleShop() {
+  let last = "";
+  for (;;) {
+    const cards = LIFESTYLE.map((it) => {
+      const owned = s.lifestyle.find((o) => o.id === it.id);
+      const q = it.perQ ?? {};
+      const fx = [
+        it.decisions ? chip(`+${it.decisions} decision/q`, "good") : "",
+        chip(`Hype +${it.hype}${q.hype ? `, then +${q.hype}/q` : ""}`, "good"),
+        it.reputation || q.reputation ? chip(`Rep +${it.reputation}${q.reputation ? `, +${q.reputation}/q` : ""}`, "good") : "",
+        it.morale ? chip(`Morale ${it.morale}${q.morale ? `, ${q.morale}/q` : ""}`, "bad") : "",
+        it.upkeep ? chip(`${fmt(it.upkeep)}/q forever`, "bad") : "",
+      ].join("");
+      const btn = (payer: Payer, label: string) => {
+        const block = lifestyleBlocker(s, it.id, payer);
+        return `<button data-v="${payer}:${it.id}" ${block ? `disabled title="${esc(block)}"` : ""}>${label}</button>`;
+      };
+      return `<div class="choice ls ${owned ? "owned" : ""}">
+        <b>${it.emoji} ${esc(it.name)} <span class="price">${owned ? (owned.payer === "company" ? "✓ expensed" : "✓ yours") : fmt(it.cost)}</span></b>
+        <small>${esc(it.blurb)}</small>
+        <span>${fx}</span>
+        ${owned ? "" : `<div class="ls-pay">${btn("self", "💳 My savings")}${btn("company", `🏢 Company card · suspicion +${expenseSuspicion(s, it)}`)}</div>`}
+      </div>`;
+    });
+    const r = await modal(
+      `<h2>💳 Lifestyle</h2>
+      <p class="sub">Your savings ${fmt(s.savings)} · company cash ${fmt(s.cash)}${s.expensed ? ` · already expensed ${fmt(s.expensed)} (auditors love receipts)` : ""}. Buying doesn't use a decision.</p>
+      ${last ? `<p class="promise">${last}</p>` : ""}
+      <div class="choices ls-grid">${cards.join("")}</div>`,
+      [{ label: "Done shopping", value: "close" }],
+      { wide: true },
+    );
+    const [payer, id] = r.value.split(":") as [Payer, string];
+    if (!id || lifestyleBlocker(s, id, payer)) return;
+    const out = buyLifestyle(s, id, payer);
+    const it = LIFESTYLE.find((x) => x.id === id)!;
+    music.play(payer === "company" ? "zug" : "kaching");
+    scene.ceoBubble(payer === "company" ? "Client development." : "I earned this.");
+    last = `${it.emoji} ${esc(it.name)}: ${out.map(esc).join(" ")}`;
+    render();
+  }
+}
+
 // ---------- real estate & office shop ----------
 
 function chip(text: string, kind: "good" | "bad" | "neutral") {
@@ -1572,6 +1631,7 @@ async function ceoPanel() {
       <p>Offshore account (Zug): <b>${fmt(s.offshore)}</b></p>
       <p>Equity: <b>${(s.equity * 100).toFixed(1)}%</b> ≈ ${fmt(valuation(s) * s.equity)} on paper</p>
       <p>Reputation: <b>${s.reputation}/100</b></p>
+      ${s.lifestyle.length ? `<p>Lifestyle: ${s.lifestyle.map((o) => LIFESTYLE.find((x) => x.id === o.id)?.emoji ?? "").join(" ")}${s.expensed ? ` <span class="sub">(${fmt(s.expensed)} on the company card)</span>` : ""}</p>` : ""}
       <p>Net worth: <b>${fmt(netWorth(s))}</b> of ${fmt(FIRE_TARGET)} FIRE target</p>
     </div>
     ${s.threads.length ? `<h3>📖 Storylines</h3>${s.threads.map((t) => `<details><summary><b>${esc(t.title)}</b> · ${t.open ? "ongoing" : "closed"} · ${t.episodes.length} ep.</summary>${t.episodes.map((e) => `<p class="sub">${esc(e)}</p>`).join("")}</details>`).join("")}` : ""}
@@ -1614,7 +1674,7 @@ function quarterReportHtml(q: number, b: ReturnType<typeof snapshot>, lines: str
   const money = (d: number, goodUp = true) =>
     d === 0 ? "" : `<span class="d ${(d > 0) === goodUp ? "up" : "down"}">${d > 0 ? "▲" : "▼"}${fmt(Math.abs(d))}</span>`;
   const c = b.costs;
-  const costTotal = c.payroll + c.rent + c.perks + c.you + c.saas;
+  const costTotal = c.payroll + c.rent + c.perks + c.you + c.saas + c.lifestyle;
   const net = b.revenue - costTotal;
   const runway = runwayQuarters(s);
   const pl = [
@@ -1624,6 +1684,7 @@ function quarterReportHtml(q: number, b: ReturnType<typeof snapshot>, lines: str
     ...(c.perks ? [["🛍️ Perk upkeep", -c.perks, ""]] : []),
     ["🧩 SaaS licences", -c.saas, ""],
     [c.you ? "🕶️ Your salary" : "🕶️ Your salary (frozen)", -c.you, ""],
+    ...(c.lifestyle ? [["💳 Your lifestyle (company card)", -c.lifestyle, "bad"]] : []),
   ] as [string, number, string][];
   const vital = (label: string, cls: string, from: number, to: number, goodUp = true) =>
     `<div class="vital"><span>${label}</span><div class="bar ${cls}"><i style="width:${to}%"></i></div><b>${to}</b>${arrow(to - from, goodUp)}</div>`;
