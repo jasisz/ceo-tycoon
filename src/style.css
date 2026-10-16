@@ -179,7 +179,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .qr-card .sub { font-size: 12px; margin: 4px 0 0; color: var(--muted); }
 
 /* org chart tree */
-.oc-wrap { overflow: auto; max-height: 52vh; padding: 10px 8px 14px; background: #f6f8fc; border: 1px solid var(--line); border-radius: 10px; margin-top: 8px; }
+.oc-wrap { overflow: auto; max-height: 42vh; padding: 10px 8px 14px; background: #f6f8fc; border: 1px solid var(--line); border-radius: 10px; margin-top: 8px; }
 .oc, .oc ul { display: flex; justify-content: center; margin: 0; padding: 18px 0 0; list-style: none; position: relative; }
 .oc { padding-top: 0; min-width: max-content; }
 .oc li { list-style: none; position: relative; padding: 18px 5px 0; display: flex; flex-direction: column; align-items: center; }
@@ -216,3 +216,12 @@ main { flex: 1; display: flex; min-height: 0; }
 .oc-titles button small { color: var(--muted); }
 .oc-titles button.on { border-color: var(--accent); background: #eef2ff; font-weight: 600; }
 .oc-card small.oc-warn { color: var(--bad); font-weight: 600; }
+
+.oc-put { margin-top: 4px; font: inherit; font-size: 10.5px; font-weight: 600; padding: 2px 6px; border-radius: 6px; border: 1px dashed var(--accent); background: #eef2ff; color: var(--accent); cursor: pointer; }
+.oc-put:hover { background: var(--accent); color: #fff; }
+.oc-card.ceo .oc-put { background: #2c3650; color: #fff; border-color: #8ea2ff; }
+.oc-inspect-head { display: flex; align-items: baseline; gap: 8px; }
+.oc-x { margin-left: auto; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--muted); }
+.oc-field { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--muted); margin-top: 6px; }
+.oc-field select { font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; min-width: 260px; }
+#modal-card { max-height: 94vh; overflow-y: auto; }

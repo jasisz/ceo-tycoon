@@ -1192,6 +1192,13 @@ async function orgChart() {
     }
     const moodOf = (x: Employee) => employeeMood(s, s.employees.find((o) => o.id === x.id)!);
     const orig = (id: number) => s.employees.find((x) => x.id === id)!;
+    const pm = new Map([...plan.values()].map((c) => [c.id, c.managerId]));
+    const selName = sel !== null ? sim.employees.find((x) => x.id === sel)?.name.split(" ")[0] : "";
+    // when someone is selected, every valid new boss offers an explicit button
+    const putHere = (target: number | null) =>
+      sel === null || target === sel || plan.get(sel)!.managerId === target || wouldCycle(s, sel, target, pm)
+        ? ""
+        : `<button class="oc-put" data-put="${target ?? "ceo"}">⤵ Put ${esc(selName ?? "")} here</button>`;
     const card = (e: Employee) => {
       const team = reportsOf(sim, e.id);
       const m = moodOf(e);
@@ -1209,6 +1216,7 @@ async function orgChart() {
         <b>${esc(e.name)}</b>
         <small>${esc(titleOf(e))}</small>
         ${warns.length ? `<small class="oc-warn">⚠ ${esc(warns.join(" · "))}</small>` : ""}
+        ${putHere(e.id)}
       </div>`;
     };
     const node = (e: Employee): string => `<li>${card(e)}${children(reportsOf(sim, e.id))}</li>`;
@@ -1234,11 +1242,16 @@ async function orgChart() {
     }).length;
     const picked = sel !== null ? sim.employees.find((x) => x.id === sel) : undefined;
     const inspector = picked
-      ? `<div class="oc-inspect"><b>${esc(picked.name)}</b> <span class="sub">${esc(picked.role)} · now click their new boss (or 🕶️ You), or drag.</span>
+      ? `<div class="oc-inspect">
+        <div class="oc-inspect-head"><b>${esc(picked.name)}</b><span class="sub">${esc(picked.role)}</span><button class="oc-x" data-close>✕</button></div>
+        <label class="oc-field">Reports to
+          <select id="oc-boss">${[`<option value="ceo">👔 You (CEO)</option>`, ...sim.employees.filter((x) => x.id !== picked.id && !wouldCycle(s, picked.id, x.id, pm)).map((x) => `<option value="${x.id}" ${picked.managerId === x.id ? "selected" : ""}>${esc(x.name)} — ${esc(titleOf(x))}</option>`)].join("")}</select>
+        </label>
+        <div class="oc-field">Title</div>
         <div class="oc-titles">${[null, ...TITLE_IDS]
           .map((k) => `<button data-t="${k ?? ""}" class="${(picked.title ?? null) === k ? "on" : ""}">${esc(k ? titleOf({ ...picked, title: k }) : picked.role)}${k ? ` <small>+${fmt(TITLES[k].premium)}/q</small>` : ""}</button>`)
           .join("")}</div></div>`
-      : `<div class="oc-inspect"><span class="sub">Click someone to give them a title or a new boss. Or just drag cards around.</span></div>`;
+      : `<div class="oc-inspect"><span class="sub">👆 Click a person to change their title or boss. Shortcut: drag a card onto their new boss.</span></div>`;
     $("#org-body").innerHTML = `
       <div class="chips">
         ${chip(`${span} report to you`, span > CEO_SPAN ? "bad" : "good")}
@@ -1251,18 +1264,20 @@ async function orgChart() {
       ${depth > HEALTHY_DEPTH ? `<p class="sub bad">⚠️ ${depth} layers: revenue −${(depth - HEALTHY_DEPTH) * 4}% to alignment meetings.</p>` : ""}
       ${warn ? `<p class="sub bad">${esc(warn)}</p>` : ""}
       ${inspector}
-      <div class="oc-wrap"><ul class="oc"><li><div class="oc-card ceo" data-id="ceo"><span class="oc-top">👔</span><b>You</b><small>CEO · ${span} direct</small></div>${children(top)}</li></ul></div>
+      <div class="oc-wrap"><ul class="oc"><li><div class="oc-card ceo" data-id="ceo"><span class="oc-top">👔</span><b>You</b><small>CEO · ${span} direct</small>${putHere(null)}</div>${children(top)}</li></ul></div>
       <p class="sub">🧭 ≤4 direct reports and every manager running a happy team of 3–${MANAGER_SPAN} = +1 decision per quarter. Managers in a good mood (60+) get 10% more out of their team. When someone leaves, their manager inherits their systems.</p>`;
     warn = "";
     const body = $("#org-body");
     body.querySelectorAll<HTMLElement>(".oc-card").forEach((el) => {
       const id = el.dataset.id === "ceo" ? null : Number(el.dataset.id);
-      el.addEventListener("click", () => {
-        if (sel !== null && id !== sel) moveTo(sel, id);
-        else sel = sel === id ? null : id;
+      el.addEventListener("click", (ev) => {
+        const put = (ev.target as HTMLElement).closest<HTMLElement>("[data-put]");
+        if (put && sel !== null) moveTo(sel, put.dataset.put === "ceo" ? null : Number(put.dataset.put));
+        else if (id !== null) sel = sel === id ? null : id;
         draw();
       });
       el.addEventListener("dragstart", (ev) => {
+        if (id === null) return ev.preventDefault();
         ev.dataTransfer?.setData("text/plain", String(id));
         el.classList.add("dragging");
       });
@@ -1277,6 +1292,15 @@ async function orgChart() {
         if (!Number.isNaN(from) && from !== id) moveTo(from, id);
         draw();
       });
+    });
+    body.querySelector<HTMLSelectElement>("#oc-boss")?.addEventListener("change", (ev) => {
+      const v = (ev.target as HTMLSelectElement).value;
+      if (sel !== null) moveTo(sel, v === "ceo" ? null : Number(v));
+      draw();
+    });
+    body.querySelector("[data-close]")?.addEventListener("click", () => {
+      sel = null;
+      draw();
     });
     body.querySelectorAll<HTMLButtonElement>(".oc-titles button").forEach((b) =>
       b.addEventListener("click", () => {
