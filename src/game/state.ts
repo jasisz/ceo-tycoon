@@ -55,6 +55,7 @@ export interface GameState {
   lastPartyQuarter: number;
   lastRaiseQuarter: number;
   lastRevenue: number;
+  eventResolvedQuarter: number; // quarter whose random event has been played
   recentEvents: string[];
   log: string[];
   over?: { win: boolean; title: string; text: string; canContinue: boolean };
@@ -95,6 +96,43 @@ const pick = <T>(a: readonly T[]) => a[Math.floor(Math.random() * a.length)];
 const clamp = (v: number, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, v));
 let nextId = 1;
 
+// ---------- save / load ----------
+
+const SAVE_KEY = "ceo-tycoon-save-v1";
+
+export function saveGame(s: GameState) {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(s));
+  } catch {
+    /* private mode / quota - the game still works, it just won't persist */
+  }
+}
+
+export function loadGame(): GameState | null {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw) as GameState;
+    if (!Array.isArray(s.employees) || typeof s.quarter !== "number" || typeof s.cash !== "number") return null;
+    s.eventResolvedQuarter ??= s.quarter - 1;
+    s.promises ??= [];
+    s.recentEvents ??= [];
+    s.log ??= [];
+    nextId = Math.max(0, ...s.employees.map((e) => e.id)) + 1;
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+export function clearSave() {
+  try {
+    localStorage.removeItem(SAVE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 function makeEmployee(desk: number, quarter: number): Employee {
   return {
     id: nextId++,
@@ -127,6 +165,7 @@ export function newCompany(prev?: GameState): GameState {
     lastPartyQuarter: -10,
     lastRaiseQuarter: -10,
     lastRevenue: 0,
+    eventResolvedQuarter: 0,
     recentEvents: [],
     log: [],
   };

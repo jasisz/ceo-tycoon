@@ -8,6 +8,9 @@ import {
   PRODUCTS,
   applyEffects,
   canIPO,
+  clearSave,
+  loadGame,
+  saveGame,
   describe,
   employeeMood,
   endQuarter,
@@ -55,7 +58,8 @@ async function api<T extends { mock?: boolean }>(path: string, body: unknown): P
 
 // ---------- state ----------
 
-let s: GameState = newCompany();
+const saved = loadGame();
+let s: GameState = saved ?? newCompany();
 let scene: OfficeScene;
 let busy = false;
 
@@ -136,10 +140,12 @@ function renderActions() {
       .join("")}
     <p class="tip">Click an employee for a 1:1 (free). Click yourself (sunglasses) for your finances.</p>
     <button class="end" data-a="end" ${busy ? "disabled" : ""}>End quarter ▶</button>
+    <button class="newgame" data-a="new" ${busy ? "disabled" : ""}>↺ New game</button>
   `;
 }
 
 function render() {
+  saveGame(s);
   renderHud();
   renderActions();
   renderLog();
@@ -151,6 +157,7 @@ $("#actions").addEventListener("click", async (e) => {
   const id = (e.target as HTMLElement).closest("button")?.dataset.a;
   if (!id || busy) return;
   if (id === "end") return nextQuarter();
+  if (id === "new") return newGame();
   const a = ACTIONS.find((x) => x.id === id);
   if (!a || !a.enabled() || s.actionsLeft <= 0) return;
   await a.run();
@@ -458,6 +465,7 @@ async function startQuarter() {
     const ev = await (pendingEvent ?? api<GameEvent>("/api/event", { context: describe(s), recentTitles: s.recentEvents }));
     pendingEvent = null;
     s.recentEvents = [ev.title, ...s.recentEvents].slice(0, 6);
+    s.eventResolvedQuarter = s.quarter; // a reload after this point won't re-roll the event
     renderHud();
     const r = await modal(
       `<p class="kicker">Q${s.quarter} event</p><h2>${esc(ev.title)}</h2><p>${esc(ev.description)}</p>
@@ -543,6 +551,42 @@ async function gameOver() {
   await intro();
 }
 
+async function newGame() {
+  const r = await modal(`<h2>Start a new game?</h2><p>Your current career (net worth ${fmt(netWorth(s))}) will be lost. Like tears in rain. Or equity in a down round.</p>`, [
+    { label: "Keep playing", value: "no" },
+    { label: "New game", value: "yes" },
+  ]);
+  if (r.value !== "yes") return;
+  clearSave();
+  pendingEvent = null;
+  s = newCompany();
+  scene.sync([]);
+  render();
+  await intro();
+}
+
+async function welcomeBack() {
+  const r = await modal(
+    `<p class="kicker">Saved game</p><h2>Welcome back to ${esc(s.company)}</h2>
+    <p>Q${s.quarter}, ${s.employees.length} employees, ${fmt(s.cash)} in the bank. Net worth ${fmt(netWorth(s))} of ${fmt(FIRE_TARGET)}.</p>
+    <p class="sub">Nobody noticed you were gone. That's either great or concerning.</p>`,
+    [
+      { label: "New game", value: "new" },
+      { label: "Continue", value: "continue", primary: false },
+    ],
+  );
+  if (r.value === "new") {
+    clearSave();
+    s = newCompany();
+    scene.sync([]);
+    render();
+    return intro();
+  }
+  if (s.over) return gameOver();
+  if (s.eventResolvedQuarter < s.quarter) return startQuarter();
+  void gossip();
+}
+
 async function intro() {
   prefetchEvent();
   await modal(
@@ -590,7 +634,7 @@ game.scene.add("office", OfficeScene, true, {
     onReady: (sc: OfficeScene) => {
       scene = sc;
       render();
-      void intro();
+      void (saved ? welcomeBack() : intro());
     },
   },
 });

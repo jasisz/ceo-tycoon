@@ -13,7 +13,7 @@ npm install
 npm run dev
 ```
 
-Without a key the game still runs with a dumb heuristic "mock GM".
+Without a key the game still runs with a dumb heuristic "mock GM". Progress autosaves to localStorage.
 
 ## How the LLM is wired in
 
