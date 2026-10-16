@@ -22,6 +22,17 @@ company as a Zoom grid. Hire beyond your desks and people hot-desk on beanbags (
 The office shop sells perks with trade-offs (climbing wall, beer fridge, AI receptionist, valuation
 LED wall...), all visible in the office and known to the LLM's office gossip.
 
+## Things come back to bite you
+
+- **Company systems** (infra, billing, product, sales) are each understood by exactly one person, who
+  is paid accordingly. Fire them to save money and the system rots; below 30 it's a crisis and the
+  board calls you in to explain yourself (in writing, judged by the LLM).
+- **People remember.** Every employee keeps a history of promises, broken promises, 1:1s and who got
+  fired. The LLM reads it in every conversation.
+- **Alumni** hold grudges, post Glassdoor reviews, join competitors, and can be rehired as contractors
+  at 3x — if your phone call convinces them. Whoever processed your Zug invoices may blow the whistle.
+- **Investor KPIs**: numbers you throw around in a pitch get written down and checked later.
+
 ## How the LLM is wired in
 
 - `server/llm.ts` — game master: judges free-text actions (all-hands, investor pitch, 1:1s, custom

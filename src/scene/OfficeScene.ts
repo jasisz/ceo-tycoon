@@ -77,6 +77,7 @@ interface Person {
   timer?: Phaser.Time.TimerEvent;
   lastMood: number;
   camOff?: Phaser.GameObjects.Container; // remote only
+  badge: Phaser.GameObjects.Text;
 }
 
 interface Bubble {
@@ -97,6 +98,8 @@ export interface OfficeCallbacks {
   onCeoClick: () => void;
   getMood: (id: number) => number;
   getValuation: () => string;
+  getBadge: (id: number) => string; // emojis of the systems this person owns
+  inCrisis: () => boolean;
   onReady: (scene: OfficeScene) => void;
 }
 
@@ -1037,6 +1040,7 @@ export class OfficeScene extends Phaser.Scene {
           p.lastMood = m;
           p.camOff?.setVisible(m < 30);
         }
+        p.badge.setText(this.cb.getBadge(e.id));
         if (deskChanged && !this.remote) this.walkTo(p, this.home(e), () => this.settle(p));
       } else this.spawn(e, idx);
     });
@@ -1056,7 +1060,9 @@ export class OfficeScene extends Phaser.Scene {
     const mood = this.cb.getMood(e.id);
     this.drawMouth(f.face, mood);
     const start = this.spawnSeated || this.remote ? this.home(e) : { ...this.L.door };
-    const p: Person = { data: e, ...f, g: start, walking: false, seated: false, phase: Math.random() * 10, lastMood: mood };
+    const badge = this.txt(13, -54, this.cb.getBadge(e.id), { fontSize: "10px" }).setOrigin(0, 1);
+    f.c.add(badge);
+    const p: Person = { data: e, ...f, g: start, walking: false, seated: false, phase: Math.random() * 10, lastMood: mood, badge };
     this.people.set(e.id, p);
     f.c.setInteractive(new Phaser.Geom.Rectangle(-14, -56, 28, 58), Phaser.Geom.Rectangle.Contains);
     f.c.on("pointerdown", () => this.cb.onEmployeeClick(e.id));
@@ -1189,6 +1195,10 @@ export class OfficeScene extends Phaser.Scene {
     const all = [...this.people.values()];
     if (!all.length) return;
     const p = Phaser.Utils.Array.GetRandom(all);
+    if (this.cb.inCrisis() && Math.random() < 0.35) {
+      this.emote(p.c, Phaser.Utils.Array.GetRandom(["🔥", "🚨", "😱", "🧯"]));
+      return;
+    }
     if (this.remote) {
       if (p.camOff?.visible) return;
       this.emote(p.c, Phaser.Utils.Array.GetRandom(["🔇", "👋", "🍕", "🐈", "📶", this.moodEmote(p.lastMood)]));
@@ -1396,13 +1406,14 @@ export class OfficeScene extends Phaser.Scene {
       const f = this.makeFigure({ shirt: vests[i], pants: 0xc9ada7, skin: SKIN[(i * 2) % SKIN.length], hair: HAIR[[5, 3, 0][i]], style: (["bald", "bowl", "spiky"] as const)[i], acc: "glasses" });
       this.drawMouth(f.face, 50);
       const p: Person = {
-        data: { id: -1 - i, name: "Investor", role: "VC", quirk: "", moodOffset: 0, desk: -1, talkedQuarter: 0 },
+        data: { id: -1 - i, name: "Investor", role: "VC", quirk: "", moodOffset: 0, desk: -1, talkedQuarter: 0, salary: 0, history: [] },
         ...f,
         g: { ...this.L.door },
         walking: false,
         seated: false,
         phase: i,
         lastMood: 50,
+        badge: this.txt(0, 0, "", {}),
       };
       f.c.setInteractive(new Phaser.Geom.Rectangle(-14, -56, 28, 58), Phaser.Geom.Rectangle.Contains);
       f.c.on("pointerover", () => this.showTip(f.c, ["Partner · fleece vest, 3 board seats", "Associate · has read one book about blitzscaling", "Managing Partner · asks about TAM, then about AI"][i]));

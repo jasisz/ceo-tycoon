@@ -1,5 +1,6 @@
 // Rule-based simulation core (with a few dice rolls: audits, who gets laid off).
-// The LLM only proposes deltas; this module applies and clamps them, runs the quarterly economy and decides win/lose conditions.
+// The LLM only proposes deltas; this module applies and clamps them, runs the quarterly
+// economy, company systems, people's memories and grudges, investor KPIs and win/lose.
 
 import {
   FLOOR_COST,
@@ -16,8 +17,9 @@ export const FIRE_TARGET = 5_000_000;
 export const ACTIONS_PER_QUARTER = 2;
 export const IPO_VALUATION = 45_000_000;
 
-const SALARY_PER_QUARTER = 45_000;
-const REVENUE_PER_EMPLOYEE = 34_000;
+const REVENUE_PER_EMPLOYEE = 38_000;
+const CONTRACTOR_RATE = 3;
+const KEY_PERSON_PREMIUM = 20_000;
 const CEO_PAY = 90_000;
 const LICENSE_COST = 1_500;
 
@@ -29,6 +31,56 @@ export interface Employee {
   moodOffset: number;
   desk: number; // -1 = hot-desking (no desk)
   talkedQuarter: number;
+  salary: number; // per quarter
+  history: string[]; // what this person remembers about the CEO (fed to the LLM)
+  knowsZug?: boolean; // saw the "consulting" invoices
+  contractor?: boolean; // rehired at CONTRACTOR_RATE x salary
+}
+
+// ---------- company systems ----------
+
+export type SystemId = "infra" | "billing" | "product" | "sales";
+
+export const SYSTEMS: Record<SystemId, { name: string; emoji: string; roles: string[]; crisis: string }> = {
+  infra: { name: "Infra", emoji: "🖥️", roles: ["DevOps", "Backend Dev"], crisis: "Production is down. The status page is also down." },
+  billing: { name: "Billing", emoji: "🧾", roles: ["Backend Dev", "Data Scientist", "Office Manager"], crisis: "Billing invoiced every customer $0.00, then $1M." },
+  product: { name: "Product", emoji: "🎨", roles: ["Frontend Dev", "Designer", "Product Manager", "QA Engineer"], crisis: "The latest release removed the Save button. Nobody noticed for a week." },
+  sales: { name: "Sales", emoji: "📞", roles: ["Sales Rep", "Growth Hacker"], crisis: "The sales pipeline is empty. The CRM has one deal, named 'test'." },
+};
+export const SYSTEM_IDS = Object.keys(SYSTEMS) as SystemId[];
+
+export interface SystemState {
+  health: number; // 0..100
+  owner: number | null; // employee id; null = nobody understands it
+}
+
+export interface Alumnus {
+  id: number;
+  name: string;
+  role: string;
+  quirk: string;
+  salary: number;
+  history: string[];
+  knowsZug?: boolean;
+  owned: SystemId[]; // systems only they understood
+  leftQuarter: number;
+  reason: "laid off" | "fired" | "quit";
+  grudge: number; // 0..100
+  atCompetitor?: boolean;
+  reviewed?: boolean; // posted the Glassdoor review
+  blewWhistle?: boolean;
+  refusedQuarter?: number;
+}
+
+export type KpiMetric = "revenue" | "headcount" | "valuation" | "hype";
+
+export interface Kpi {
+  quote: string; // what the CEO actually said
+  metric: KpiMetric;
+  baseline: number;
+  target: number;
+  dueQuarter: number;
+
 }
 
 export interface PromiseItem {
@@ -64,6 +116,11 @@ export interface GameState {
   upgrades: string[];
   employees: Employee[];
   promises: PromiseItem[];
+  systems: Record<SystemId, SystemState>;
+  crises: SystemId[];
+  alumni: Alumnus[];
+  kpis: Kpi[];
+  boardDemands: string[]; // reasons the board wants to see you next quarter
   actionsLeft: number;
   lastPartyQuarter: number;
   lastRaiseQuarter: number;
@@ -134,6 +191,18 @@ export function loadGame(): GameState | null {
     s.office ??= "openspace";
     s.floors ??= 0;
     s.upgrades ??= [];
+    for (const e of s.employees) {
+      e.salary ??= 45_000;
+      e.history ??= [];
+    }
+    s.alumni ??= [];
+    s.kpis ??= [];
+    s.boardDemands ??= [];
+    s.crises ??= [];
+    if (!s.systems) {
+      s.systems = freshSystems();
+      assignOwners(s);
+    }
     nextId = Math.max(0, ...s.employees.map((e) => e.id)) + 1;
     return s;
   } catch {
@@ -158,7 +227,47 @@ function makeEmployee(desk: number, quarter: number): Employee {
     moodOffset: Math.round(Math.random() * 30 - 15),
     desk,
     talkedQuarter: quarter - 1,
+    salary: 38_000 + Math.round(Math.random() * 14) * 1_000,
+    history: [],
   };
+}
+
+const freshSystems = (): Record<SystemId, SystemState> => ({
+  infra: { health: 80, owner: null },
+  billing: { health: 80, owner: null },
+  product: { health: 80, owner: null },
+  sales: { health: 80, owner: null },
+});
+
+export const ownedBy = (s: GameState, id: number) => SYSTEM_IDS.filter((k) => s.systems[k].owner === id);
+
+/** Make someone the only person who understands a system (and pay them like it). */
+function makeOwner(s: GameState, sys: SystemId, e: Employee) {
+  s.systems[sys].owner = e.id;
+  if (ownedBy(s, e.id).length === 1) e.salary += KEY_PERSON_PREMIUM;
+  e.quirk = `is the only one who understands ${SYSTEMS[sys].name.toLowerCase()}`;
+  remember(e, s.quarter, `Became the only person who understands ${SYSTEMS[sys].name.toLowerCase()}.`);
+}
+
+/** Give every orphaned system an owner, preferring matching roles and people who own nothing yet. */
+function assignOwners(s: GameState) {
+  for (const sys of SYSTEM_IDS) {
+    if (s.systems[sys].owner !== null || !s.employees.length) continue;
+    const free = s.employees.filter((e) => !ownedBy(s, e.id).length);
+    const pool = free.length ? free : s.employees;
+    const match = pool.filter((e) => SYSTEMS[sys].roles.includes(e.role));
+    makeOwner(s, sys, pick(match.length ? match : pool));
+  }
+}
+
+/** Add a line to someone's memory of the CEO. */
+export function remember(e: { history: string[] }, quarter: number, text: string) {
+  e.history.push(`Q${quarter}: ${text}`);
+  if (e.history.length > 8) e.history.splice(0, e.history.length - 8);
+}
+
+export function rememberAll(s: GameState, text: string) {
+  for (const e of s.employees) remember(e, s.quarter, text);
 }
 
 /** Where your next CEO gig starts depends on how the last one went. */
@@ -189,6 +298,11 @@ export function newCompany(prev?: GameState): GameState {
     upgrades: [],
     employees: [],
     promises: [],
+    systems: freshSystems(),
+    crises: [],
+    alumni: [],
+    kpis: [],
+    boardDemands: [],
     actionsLeft: ACTIONS_PER_QUARTER,
     lastPartyQuarter: -10,
     lastRaiseQuarter: -10,
@@ -198,6 +312,7 @@ export function newCompany(prev?: GameState): GameState {
     log: [],
   };
   for (let i = 0; i < start.staff; i++) s.employees.push(makeEmployee(i, 1));
+  assignOwners(s);
   log(
     s,
     prev
@@ -339,14 +454,25 @@ export function leaseFloor(s: GameState) {
 
 // ---------- economy ----------
 
+/** How much the state of the company's systems lets the team actually earn. */
+export function systemsMultiplier(s: GameState) {
+  const h = s.systems;
+  let m = 0.55 + (0.45 * (h.product.health + h.sales.health)) / 200;
+  if (h.billing.health < 40) m *= 0.85; // revenue leaks through broken invoices
+  if (h.infra.health < 30) m *= 0.75; // outages
+  return m;
+}
+
 export function quarterlyRevenue(s: GameState) {
   const mult = 1 + ownedUpgrades(s).reduce((a, u) => a + u.revenue, 0) - (s.office === "remote" ? 0.03 : 0);
-  return Math.round(s.employees.length * REVENUE_PER_EMPLOYEE * (0.4 + s.morale / 100) * mult);
+  return Math.round(s.employees.length * REVENUE_PER_EMPLOYEE * (0.4 + s.morale / 100) * mult * systemsMultiplier(s));
 }
+
+export const payOf = (e: Employee) => e.salary * (e.contractor ? CONTRACTOR_RATE : 1);
 
 export function quarterlyCosts(s: GameState) {
   const n = s.employees.length;
-  return n * SALARY_PER_QUARTER + rent(s) + CEO_PAY + Math.max(0, n - 1) * LICENSE_COST;
+  return s.employees.reduce((a, e) => a + payOf(e), 0) + rent(s) + CEO_PAY + Math.max(0, n - 1) * LICENSE_COST;
 }
 
 export function valuation(s: GameState) {
@@ -373,14 +499,107 @@ export function hire(s: GameState, count: number) {
   return hired;
 }
 
-export function removeEmployees(s: GameState, count: number): Employee[] {
+/** How much someone resents you on the way out. */
+function grudgeOf(s: GameState, e: Employee, reason: Alumnus["reason"]) {
+  const broken = e.history.filter((h) => /broke|never paid|didn't pay/i.test(h)).length;
+  const base = reason === "fired" ? 60 : reason === "laid off" ? 45 : 35;
+  return clamp(base + broken * 15 - (employeeMood(s, e) - 50) / 3);
+}
+
+/** Someone leaves: they become an alumnus who remembers, and their systems are orphaned. */
+export function removeEmployee(s: GameState, id: number, reason: Alumnus["reason"]): Employee | null {
+  const idx = s.employees.findIndex((e) => e.id === id);
+  if (idx < 0) return null;
+  const [e] = s.employees.splice(idx, 1);
+  const owned = ownedBy(s, e.id);
+  for (const sys of owned) s.systems[sys].owner = null;
+  remember(e, s.quarter, reason === "quit" ? "Quit. Couldn't take it anymore." : `Was ${reason} by the CEO.`);
+  s.alumni.unshift({
+    id: e.id,
+    name: e.name,
+    role: e.role,
+    quirk: e.quirk,
+    salary: e.salary,
+    history: e.history,
+    knowsZug: e.knowsZug,
+    owned,
+    leftQuarter: s.quarter,
+    reason,
+    grudge: grudgeOf(s, e, reason),
+  });
+  s.alumni.length = Math.min(s.alumni.length, 24);
+  if (owned.length) log(s, `${e.name} took the only knowledge of ${owned.map((k) => SYSTEMS[k].name.toLowerCase()).join(" & ")} with them.`);
+  compactDesks(s);
+  return e;
+}
+
+export function removeEmployees(s: GameState, count: number, reason: Alumnus["reason"] = "quit"): Employee[] {
   const gone: Employee[] = [];
   for (let i = 0; i < count && s.employees.length > 0; i++) {
-    const idx = Math.floor(Math.random() * s.employees.length);
-    gone.push(...s.employees.splice(idx, 1));
+    const e = removeEmployee(s, s.employees[Math.floor(Math.random() * s.employees.length)].id, reason);
+    if (e) gone.push(e);
   }
-  compactDesks(s);
+  if (gone.length && reason !== "quit") rememberAll(s, `Watched ${gone.map((g) => g.name.split(" ")[0]).join(", ")} get ${reason}.`);
   return gone;
+}
+
+// ---------- alumni, rehiring, whistleblowers ----------
+
+export function rehireBlocker(s: GameState, a: Alumnus): string | null {
+  if (s.employees.length >= maxHeadcount(s)) return "No room";
+  if (a.refusedQuarter === s.quarter) return "Said no this quarter";
+  if (a.blewWhistle) return "Talking to auditors";
+  return null;
+}
+
+/** Bring someone back as a contractor (CONTRACTOR_RATE x pay). They get their systems back if still orphaned. */
+export function rehire(s: GameState, alumnusId: number) {
+  const i = s.alumni.findIndex((a) => a.id === alumnusId);
+  if (i < 0) return;
+  const [a] = s.alumni.splice(i, 1);
+  const e: Employee = {
+    id: a.id,
+    name: a.name,
+    role: a.role,
+    quirk: a.quirk,
+    moodOffset: -10,
+    desk: -1,
+    talkedQuarter: s.quarter,
+    salary: a.salary,
+    history: a.history,
+    knowsZug: a.knowsZug,
+    contractor: true,
+  };
+  remember(e, s.quarter, `Came back as a contractor at ${CONTRACTOR_RATE}x the old pay.`);
+  s.employees.push(e);
+  for (const sys of a.owned) if (s.systems[sys].owner === null) s.systems[sys].owner = e.id;
+  compactDesks(s);
+  log(s, `${a.name} is back as a contractor (${fmt(payOf(e))}/q). ${a.owned.length ? `${a.owned.map((k) => SYSTEMS[k].emoji).join("")} has an owner again.` : ""}`);
+}
+
+/** The person closest to the money notices the "consulting" invoices. */
+export function noticeZug(s: GameState) {
+  const ownerId = s.systems.billing.owner;
+  const witness = s.employees.find((e) => e.id === ownerId) ?? s.employees.find((e) => ["Office Manager", "Data Scientist"].includes(e.role));
+  if (!witness || witness.knowsZug) return;
+  witness.knowsZug = true;
+  remember(witness, s.quarter, "Processed a $250k 'consulting' invoice to a shell company in Zug. Kept a copy.");
+}
+
+// ---------- investor KPIs ----------
+
+export const KPI_LABEL: Record<KpiMetric, string> = { revenue: "quarterly revenue", headcount: "headcount", valuation: "valuation", hype: "investor hype" };
+
+export function kpiValue(s: GameState, m: KpiMetric) {
+  return m === "revenue" ? quarterlyRevenue(s) : m === "headcount" ? s.employees.length : m === "valuation" ? valuation(s) : s.hype;
+}
+
+export function addKpi(s: GameState, quote: string, metric: KpiMetric, multiplier: number, quarters: number) {
+  const baseline = kpiValue(s, metric);
+  const mult = Math.max(1.05, Math.min(10, multiplier));
+  const target = metric === "hype" ? Math.min(100, Math.round(baseline * mult)) : Math.round(baseline * mult);
+  s.kpis.push({ quote, metric, baseline, target, dueQuarter: s.quarter + Math.max(2, Math.min(6, Math.round(quarters))) });
+  log(s, `Investors wrote down: "${quote}" (${KPI_LABEL[metric]} ${metric === "revenue" || metric === "valuation" ? fmt(target) : target} by Q${s.quarter + Math.max(2, Math.min(6, Math.round(quarters)))}).`);
 }
 
 export function applyEffects(s: GameState, e: Effects): { hired: number; gone: Employee[] } {
@@ -391,7 +610,7 @@ export function applyEffects(s: GameState, e: Effects): { hired: number; gone: E
   s.offshore += Math.max(0, e.offshore ?? 0);
   const hc = e.headcount ?? 0;
   if (hc > 0) return { hired: hire(s, hc), gone: [] };
-  if (hc < 0) return { hired: 0, gone: removeEmployees(s, -hc) };
+  if (hc < 0) return { hired: 0, gone: removeEmployees(s, -hc, "quit") };
   return { hired: 0, gone: [] };
 }
 
@@ -406,8 +625,17 @@ export function describe(s: GameState) {
     `Office: ${office(s).name}${s.floors ? " (+ extra floor)" : ""}, ${capacity(s) === Infinity ? "no desks" : `${capacity(s)} desks`}${hotDeskers(s) ? `, ${hotDeskers(s)} people have no desk and are hot-desking on beanbags` : ""}.`,
     s.upgrades.length ? `Office perks the CEO bought: ${ownedUpgrades(s).map((u) => u.gossip).join(", ")}.` : "No office perks.",
     s.promises.length ? `Open CEO promises: ${s.promises.map((p) => `"${p.text}" due Q${p.dueQuarter}`).join("; ")}.` : "No open promises.",
+    `Systems: ${SYSTEM_IDS.map((k) => {
+      const o = s.employees.find((e) => e.id === s.systems[k].owner);
+      return `${SYSTEMS[k].name} ${s.systems[k].health}/100 (${o ? `only ${o.name} understands it` : "NOBODY understands it"})`;
+    }).join("; ")}.`,
+    s.crises.length ? `ONGOING CRISES: ${s.crises.map((k) => SYSTEMS[k].crisis).join(" ")}` : "",
+    s.kpis.length ? `Numbers the CEO promised investors: ${s.kpis.map((k) => `"${k.quote}" (due Q${k.dueQuarter})`).join("; ")}.` : "",
+    s.alumni.length ? `Former employees: ${s.alumni.slice(0, 5).map((a) => `${a.name} (${a.reason} Q${a.leftQuarter}${a.atCompetitor ? ", now at a competitor" : ""}${a.grudge > 60 ? ", holds a grudge" : ""})`).join("; ")}.` : "",
     `Recent log: ${s.log.slice(0, 4).join(" | ")}`,
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export interface QuarterReport {
@@ -431,10 +659,12 @@ export function endQuarter(s: GameState): QuarterReport {
     if (s.cash > p.cost * 2) {
       s.cash -= p.cost;
       s.morale = clamp(s.morale + 6);
+      rememberAll(s, `CEO actually kept a promise: "${p.text}".`);
       lines.push(`You actually kept a promise: "${p.text}" (${fmt(p.cost)}). People are shocked.`);
     } else {
       s.morale = clamp(s.morale - 18);
       s.reputation = clamp(s.reputation - 4);
+      rememberAll(s, `CEO broke a promise: "${p.text}". Never paid.`);
       lines.push(`Broken promise: "${p.text}". Someone printed your old email and taped it to the fridge.`);
     }
   }
@@ -457,10 +687,14 @@ export function endQuarter(s: GameState): QuarterReport {
     lines.push(`${homeless} people still have no desk. The beanbag waitlist is a Jira board now. Morale -${pain}.`);
   }
 
+  stepSystems(s, lines);
+  stepAlumni(s, lines);
+  stepKpis(s, lines);
+
   // attrition
   if (s.morale < 25 && s.employees.length > 0) {
     const n = Math.max(1, Math.round(s.employees.length * (s.morale < 12 ? 0.4 : 0.15)));
-    const quit = removeEmployees(s, n);
+    const quit = removeEmployees(s, n, "quit");
     gone.push(...quit);
     lines.push(`${quit.map((e) => e.name).join(", ")} quit. Their farewell Slack messages were... pointed.`);
   }
@@ -518,6 +752,99 @@ export function endQuarter(s: GameState): QuarterReport {
   s.quarter++;
   s.actionsLeft = ACTIONS_PER_QUARTER;
   return { lines, gone };
+}
+
+// ---------- quarterly steps ----------
+
+/** Systems drift toward their owner's care; orphaned ones rot. Crossing 30 is a crisis the board hears about. */
+function stepSystems(s: GameState, lines: string[]) {
+  for (const k of SYSTEM_IDS) {
+    const sys = s.systems[k];
+    const owner = s.employees.find((e) => e.id === sys.owner);
+    if (!owner) sys.owner = null;
+    if (owner) {
+      const mood = employeeMood(s, owner);
+      sys.health = clamp(sys.health + (owner.contractor ? 12 : 4 + Math.round((mood - 50) / 8)));
+    } else {
+      sys.health = clamp(sys.health - 15);
+      // someone may reluctantly adopt it (with a learning curve)
+      const free = s.employees.filter((e) => !ownedBy(s, e.id).length && SYSTEMS[k].roles.includes(e.role));
+      if (free.length && Math.random() < 0.35) {
+        const e = pick(free);
+        makeOwner(s, k, e);
+        sys.health = clamp(sys.health - 5);
+        lines.push(`${e.name} reluctantly adopted ${SYSTEMS[k].name.toLowerCase()} after reading a 2019 README.`);
+      } else lines.push(`${SYSTEMS[k].emoji} ${SYSTEMS[k].name}: nobody understands it anymore (health ${sys.health}).`);
+    }
+    if (sys.health < 30 && !s.crises.includes(k)) {
+      s.crises.push(k);
+      const hit: Record<SystemId, Effects> = {
+        infra: { cash: -120_000, hype: -10 },
+        billing: { cash: -150_000, suspicion: 5 },
+        product: { hype: -8, morale: -6 },
+        sales: { hype: -6, morale: -3 },
+      };
+      applyEffects(s, hit[k]);
+      s.boardDemands.push(`${SYSTEMS[k].emoji} ${SYSTEMS[k].crisis}`);
+      rememberAll(s, `Lived through the ${SYSTEMS[k].name.toLowerCase()} crisis.`);
+      lines.push(`🚨 CRISIS: ${SYSTEMS[k].crisis} The board wants answers.`);
+    } else if (sys.health >= 50 && s.crises.includes(k)) {
+      s.crises = s.crises.filter((c) => c !== k);
+      lines.push(`✅ ${SYSTEMS[k].name} crisis is over.`);
+    }
+  }
+}
+
+/** Former employees don't just disappear. */
+function stepAlumni(s: GameState, lines: string[]) {
+  for (const a of s.alumni) {
+    if (a.knowsZug && a.grudge >= 50 && !a.blewWhistle) {
+      a.blewWhistle = true;
+      s.suspicion = clamp(s.suspicion + 22);
+      s.boardDemands.push(`📂 ${a.name} (ex-${a.role}) sent the auditors a 40-page PDF about "consulting fees" to Zug.`);
+      lines.push(`📂 ${a.name} blew the whistle on the Zug invoices. Suspicion +22.`);
+      continue;
+    }
+    if (a.grudge >= 60 && !a.reviewed && Math.random() < 0.4) {
+      a.reviewed = true;
+      s.hype = clamp(s.hype - 4);
+      s.morale = clamp(s.morale - 3);
+      lines.push(`⭐ ${a.name} left a 1-star Glassdoor review. It's very specific.`);
+    }
+    if (a.owned.length && !a.atCompetitor && s.quarter - a.leftQuarter >= 1 && Math.random() < 0.25) {
+      a.atCompetitor = true;
+      s.hype = clamp(s.hype - 4);
+      lines.push(`🏃 ${a.name} joined a competitor. They shipped your roadmap in three weeks.`);
+    }
+    a.grudge = clamp(a.grudge - 4);
+  }
+  // employees who know about Zug and hate you might leak while still on payroll
+  for (const e of s.employees) {
+    if (e.knowsZug && employeeMood(s, e) < 25 && Math.random() < 0.3) {
+      s.suspicion = clamp(s.suspicion + 10);
+      remember(e, s.quarter, "Forwarded the Zug invoice to a journalist 'by accident'.");
+      lines.push(`📨 Someone forwarded a Zug invoice to a journalist. Suspicion +10.`);
+    }
+  }
+}
+
+/** Numbers you promised investors come due. */
+function stepKpis(s: GameState, lines: string[]) {
+  for (const k of s.kpis.filter((x) => x.dueQuarter <= s.quarter)) {
+    const v = kpiValue(s, k.metric);
+    if (v >= k.target) {
+      s.hype = clamp(s.hype + 8);
+      s.reputation = clamp(s.reputation + 3);
+      lines.push(`🎯 You actually hit "${k.quote}". Investors are suspicious of how happy they are.`);
+    } else {
+      const ratio = v / Math.max(1, k.target);
+      s.hype = clamp(s.hype - (ratio < 0.5 ? 18 : 10));
+      s.reputation = clamp(s.reputation - 3);
+      s.boardDemands.push(`📉 You told investors "${k.quote}". You delivered ${Math.round(ratio * 100)}% of it.`);
+      lines.push(`📉 Missed KPI: "${k.quote}" (${Math.round(ratio * 100)}% of target).`);
+    }
+  }
+  s.kpis = s.kpis.filter((x) => x.dueQuarter > s.quarter);
 }
 
 /** Honest exit: IPO pays out the CEO's equity. */

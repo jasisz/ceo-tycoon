@@ -69,6 +69,16 @@ main { flex: 1; display: flex; min-height: 0; }
 #footer .tip { font-size: 11px; color: var(--muted); margin: 6px 0 8px; }
 #footer button.end { width: 100%; padding: 10px; background: var(--accent); color: #fff; border: none; border-radius: 9px; font: inherit; font-weight: 700; cursor: pointer; }
 #footer button.end:disabled { opacity: .5; cursor: not-allowed; }
+#systems { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+#systems h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+#systems .sys { display: grid; grid-template-columns: 82px 1fr 64px; gap: 6px; align-items: center; font-size: 12px; margin: 3px 0; }
+#systems .sys .bar i { background: #06d6a0; }
+#systems .sys.warn .bar i { background: #f7b733; }
+#systems .sys.crit .bar i { background: var(--bad); }
+#systems .sys.crit span { color: var(--bad); font-weight: 700; }
+#systems .sys small { color: var(--muted); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.memories { background: #f4f6fb; border-radius: 8px; padding: 8px 10px; font-size: 13px; margin: 8px 0; }
+.memories p { margin: 3px 0; }
 #log h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 #log { padding: 12px; overflow-y: auto; flex: 1; font-size: 12px; }
 #log p { margin: 0 0 6px; line-height: 1.35; color: #3c4456; }

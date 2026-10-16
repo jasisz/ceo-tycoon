@@ -86,13 +86,13 @@ async function withFallback<T>(llm: () => Promise<T>, mock: () => T): Promise<T 
 
 // ---------- judge: free-text CEO actions ----------
 
-export type Scene = "allhands" | "investors" | "employee" | "event";
+export type Scene = "allhands" | "investors" | "employee" | "event" | "board" | "rehire";
 
 export interface JudgeRequest {
   scene: Scene;
   text: string;
   context: string; // compact game-state summary from the client
-  npc?: { name: string; role: string; quirk: string; mood: number };
+  npc?: { name: string; role: string; quirk: string; mood: number; history?: string[]; owns?: string[]; grudge?: number };
   eventTitle?: string;
   /** For "event": cash/headcount range spanned by the event's preset choices. Free text can't escape it. */
   bounds?: { cash: [number, number]; headcount: [number, number] };
@@ -138,8 +138,29 @@ const judgeSchema = {
       },
     },
     bullshit_score: { type: "integer", description: "0-100, how much corporate BS the text contained" },
+    memory: {
+      type: "string",
+      description: "For 'employee' and 'rehire' scenes: one sentence of what this person will remember about this conversation, from their point of view. Empty string otherwise.",
+    },
+    accepted: { type: "boolean", description: "Only for the 'rehire' scene: does the former employee agree to come back? false for all other scenes." },
+    kpis: {
+      type: "array",
+      description:
+        "Only for the 'investors' scene: concrete numeric claims about the future the CEO made (e.g. '3x revenue by next year', 'we'll be 50 people'). Investors will hold the CEO to them. Empty if the pitch was vague or for any other scene.",
+      items: {
+        type: "object",
+        properties: {
+          quote: { type: "string", description: "The claim, quoted or closely paraphrased" },
+          metric: { type: "string", enum: ["revenue", "headcount", "valuation", "hype"] },
+          multiplier: { type: "number", description: "Target as a multiple of today's value, e.g. 3 for '3x revenue'" },
+          quarters: { type: "integer", description: "Quarters until it's due (2-6)" },
+        },
+        required: ["quote", "metric", "multiplier", "quarters"],
+        additionalProperties: false,
+      },
+    },
   },
-  required: ["deltas", "consequences", "narration", "reactions", "promises", "bullshit_score"],
+  required: ["deltas", "consequences", "narration", "reactions", "promises", "bullshit_score", "memory", "accepted", "kpis"],
   additionalProperties: false,
 } as const;
 
@@ -150,13 +171,22 @@ const Judgement = z.object({
   reactions: z.array(z.object({ speaker: z.string(), line: z.string() })),
   promises: z.array(z.object({ text: z.string(), quarters_until_due: z.number(), cost: z.number() })),
   bullshit_score: z.number(),
+  memory: z.string(),
+  accepted: z.boolean(),
+  kpis: z.array(z.object({ quote: z.string(), metric: z.enum(["revenue", "headcount", "valuation", "hype"]), multiplier: z.number(), quarters: z.number() })),
 });
 export type Judgement = z.infer<typeof Judgement>;
 
 const SCENE_BRIEF: Record<Scene, string> = {
   allhands: "The CEO is giving a speech at a company all-hands meeting. Employees react. Investors only hear about it second-hand (small hype effect).",
-  investors: "The CEO is pitching to investors for a funding round. Investor reactions dominate; employees barely notice unless the CEO promises layoffs or similar.",
-  employee: "The CEO is having a one-on-one with a single employee. Effects should be small (morale within -6..6, hype ~0). The reaction must be that employee speaking in character.",
+  investors:
+    "The CEO is pitching to investors for a funding round. Investor reactions dominate; employees barely notice unless the CEO promises layoffs or similar. Record every concrete numeric promise about the future in kpis - investors write those down.",
+  board:
+    "The board of directors has called the CEO in to explain the problems listed below. The board is skeptical and has read the numbers. Vague corporate speak and blaming the market raise suspicion; owning the problem with a concrete plan lowers it. Blaming a specific former employee can work, but they may hear about it.",
+  rehire:
+    "The CEO is trying to convince a former employee to come back as a well-paid contractor, usually because only they understand a system that is now broken. They remember everything in their history and their grudge level. Set accepted=true only if the CEO genuinely addresses what went wrong (an apology that sounds real, paying what was promised, respect). Groveling corporate speak or new promises from a CEO who broke old ones should fail. The reaction is that person speaking.",
+  employee:
+    "The CEO is having a one-on-one with a single employee. Effects should be small (morale within -6..6, hype ~0). The reaction must be that employee speaking in character, and they remember their history with the CEO (broken promises, colleagues fired, crises they fixed).",
   event:
     "The CEO is responding in their own words to a company event. Judge the response in light of the event. Also decide the material consequences (cash, headcount): talking does not make a cost disappear - if every sensible way out of this event costs money or people, so does this one, unless the response genuinely and cleverly avoids it.",
 };
@@ -184,11 +214,17 @@ function mockJudge(req: JudgeRequest): Judgement {
     reactions: [{ speaker: req.npc?.name ?? (inv ? "Investor" : "Someone in the back"), line: buzz > 2 ? "Is this a speech or a LinkedIn post?" : "Okay... sure." }],
     promises: bonus > 0 && !inv ? [{ text: "That bonus you mentioned", quarters_until_due: 2, cost: 50_000 }] : [],
     bullshit_score: Math.min(100, buzz * 15),
+    memory: req.scene === "employee" || req.scene === "rehire" ? "[mock] The CEO talked at me for a while." : "",
+    accepted: req.scene === "rehire" && ((req.npc?.grudge ?? 50) < 55 || /\b(pay|sorry|apolog)/.test(t)),
+    kpis: inv && /(\d+)\s*x/.test(t) ? [{ quote: req.text.slice(0, 80), metric: "revenue" as const, multiplier: Number(/(\d+)\s*x/.exec(t)![1]), quarters: 4 }] : [],
   };
 }
 
 export function judge(req: JudgeRequest) {
-  const npc = req.npc ? `\nYou are talking to: ${req.npc.name}, ${req.npc.role}. Quirk: ${req.npc.quirk}. Current mood ${req.npc.mood}/100.` : "";
+  const n = req.npc;
+  const npc = n
+    ? `\nYou are talking to: ${n.name}, ${n.role}. Quirk: ${n.quirk}. Current mood ${n.mood}/100.${n.owns?.length ? ` They are the only person who understands: ${n.owns.join(", ")}.` : ""}${n.grudge !== undefined ? ` Grudge against the CEO: ${n.grudge}/100.` : ""}${n.history?.length ? `\nWhat they remember about the CEO:\n- ${n.history.join("\n- ")}` : ""}`
+    : "";
   const b = req.scene === "event" ? req.bounds ?? { cash: [0, 0], headcount: [0, 0] } : { cash: [0, 0] as [number, number], headcount: [0, 0] as [number, number] };
   const ev = req.eventTitle
     ? `\nEvent being responded to: ${req.eventTitle}\nThe preset choices for this event ranged from cash ${b.cash[0]} to ${b.cash[1]} USD and headcount ${b.headcount[0]} to ${b.headcount[1]}; stay within that range.`
@@ -204,6 +240,9 @@ export function judge(req: JudgeRequest) {
         consequences: { cash: within(j.consequences.cash, b.cash), headcount: within(j.consequences.headcount, b.headcount) },
         reactions: j.reactions.slice(0, 3),
         promises: j.promises.slice(0, 2),
+        accepted: req.scene === "rehire" && j.accepted,
+        kpis: req.scene === "investors" ? j.kpis.slice(0, 3) : [],
+        memory: j.memory.slice(0, 200),
       };
     },
     () => mockJudge(req),

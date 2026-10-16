@@ -37,6 +37,20 @@ import {
   moveOffice,
   floorBlocker,
   leaseFloor,
+  SYSTEMS,
+  SYSTEM_IDS,
+  KPI_LABEL,
+  addKpi,
+  noticeZug,
+  ownedBy,
+  payOf,
+  rehire,
+  rehireBlocker,
+  remember,
+  rememberAll,
+  removeEmployee,
+  type Alumnus,
+  type Employee,
   type Effects,
   type GameState,
 } from "./game/state";
@@ -47,6 +61,9 @@ import { FLOOR_COST, FLOOR_DESKS, FLOOR_RENT, OFFICES, UPGRADES, type OfficeTier
 interface Judgement {
   deltas: { morale: number; hype: number; suspicion: number };
   consequences: { cash: number; headcount: number };
+  memory: string;
+  accepted: boolean;
+  kpis: { quote: string; metric: "revenue" | "headcount" | "valuation" | "hype"; multiplier: number; quarters: number }[];
   narration: string;
   reactions: { speaker: string; line: string }[];
   promises: { text: string; quarters_until_due: number; cost: number }[];
@@ -198,6 +215,17 @@ const ACTIONS: Action[] = [
     sub: () => (s.promises.some((p) => p.text.startsWith("Bonus for everyone")) ? "already promised" : `pay ${fmt(8_000 * s.employees.length)} later`),
     run: promiseBonus,
   },
+  {
+    id: "alumni",
+    group: "people",
+    icon: "📇",
+    label: "Alumni",
+    hint: "People who left. Rehire one as a contractor (uses a decision, if they agree).",
+    free: true,
+    enabled: () => true,
+    sub: () => (s.alumni.length ? `${s.alumni.length} former · ${s.alumni.filter((a) => a.grudge >= 60 || a.blewWhistle).length} angry` : "nobody yet"),
+    run: alumni,
+  },
   { id: "pivot", group: "company", icon: "🔀", label: "Pivot", hint: "New product. Hype up, morale down.", enabled: () => true, sub: () => "hype ↑ morale ↓", run: pivot },
   { id: "realestate", group: "company", icon: "🏢", label: "Real estate", hint: "Move offices, lease another floor or go remote.", enabled: () => true, sub: () => `${office(s).emoji} ${office(s).name.split(" ")[0].toLowerCase()}`, run: realEstate },
   { id: "shop", group: "company", icon: "🛍️", label: "Office shop", hint: "Perks for the office. Costs money, not a decision.", free: true, enabled: () => true, sub: () => "free action", run: shop },
@@ -239,8 +267,24 @@ function renderActions() {
     <button class="end" data-a="end" ${busy ? "disabled" : ""}>End Q${s.quarter} ▶</button>`;
 }
 
+function renderSystems() {
+  $("#systems").innerHTML =
+    `<h3>Company systems</h3>` +
+    SYSTEM_IDS.map((k) => {
+      const sys = s.systems[k];
+      const o = s.employees.find((e) => e.id === sys.owner);
+      const cls = sys.health < 30 ? "crit" : sys.health < 50 ? "warn" : "";
+      return `<div class="sys ${cls}" title="${esc(o ? `Only ${o.name} understands this.` : "Nobody understands this anymore. It's rotting.")}">
+        <span>${SYSTEMS[k].emoji} ${SYSTEMS[k].name}</span>
+        <div class="bar"><i style="width:${sys.health}%"></i></div>
+        <small>${o ? esc(o.name.split(" ")[0]) : "⚠️ nobody"}</small>
+      </div>`;
+    }).join("");
+}
+
 function render() {
   saveGame(s);
+  renderSystems();
   renderHud();
   renderActions();
   renderLog();
@@ -333,12 +377,24 @@ function showReactions(j: Judgement, onlyFor?: number) {
   });
 }
 
-function addPromises(j: Judgement) {
+function addPromises(j: Judgement, to?: Employee) {
   for (const p of j.promises) {
-    s.promises.push({ text: p.text, dueQuarter: s.quarter + clamp(p.quarters_until_due, 1, 4), cost: clamp(p.cost, 0, 2_000_000) });
-    log(s, `You promised: "${p.text}". Someone wrote it down.`);
+    const due = s.quarter + clamp(p.quarters_until_due, 1, 4);
+    s.promises.push({ text: to ? `${p.text} (to ${to.name})` : p.text, dueQuarter: due, cost: clamp(p.cost, 0, 2_000_000) });
+    if (to) remember(to, s.quarter, `CEO promised me: "${p.text}" by Q${due}.`);
+    else rememberAll(s, `CEO promised everyone: "${p.text}" by Q${due}.`);
+    log(s, `You promised${to ? ` ${to.name}` : ""}: "${p.text}". Someone wrote it down.`);
   }
 }
+
+const npcOf = (e: Employee) => ({
+  name: e.name,
+  role: e.role,
+  quirk: e.quirk,
+  mood: employeeMood(s, e),
+  history: e.history,
+  owns: ownedBy(s, e.id).map((k) => SYSTEMS[k].name.toLowerCase()),
+});
 
 async function judged(scene_: string, text: string, extra: Record<string, unknown> = {}) {
   return api<Judgement>("/api/judge", { scene: scene_, text, context: describe(s), ...extra });
@@ -410,6 +466,10 @@ async function pitch() {
     const [j] = await Promise.all([judged("investors", r.text), arrived]);
     applyEffects(s, j.deltas);
     addPromises(j);
+    for (const k of j.kpis) addKpi(s, k.quote, k.metric, k.multiplier, k.quarters);
+    const kpiHtml = s.kpis.length
+      ? `<p class="promise">📝 Investors wrote down: ${j.kpis.map((k) => `“${esc(k.quote)}”`).join(", ") || "nothing new"}. They will check.</p>`
+      : "";
     s.actionsLeft--;
     s.lastRaiseQuarter = s.quarter;
     let extra: string;
@@ -425,13 +485,13 @@ async function pitch() {
       log(s, "Investors passed.");
       scene.investorsLeave(false);
     }
-    await modal(judgementHtml("Pitch result", j, extra), [{ label: "OK", value: "ok" }]);
+    await modal(judgementHtml("Pitch result", j, extra + kpiHtml), [{ label: "OK", value: "ok" }]);
   });
 }
 
 async function layoffs() {
   const n = Math.max(1, Math.round(s.employees.length * 0.1));
-  const gone = removeEmployees(s, n);
+  const gone = removeEmployees(s, n, "laid off");
   applyEffects(s, { morale: -15, hype: 6 });
   s.actionsLeft--;
   log(s, `Laid off ${gone.map((e) => e.name).join(", ")}. LinkedIn post: "Hardest decision of my life."`);
@@ -459,12 +519,14 @@ function party() {
   applyEffects(s, { morale: 16 });
   s.actionsLeft--;
   log(s, `Winter party for ${fmt(cost)}. Someone from Finance did karaoke. Morale restored.`);
+  rememberAll(s, "Went to the winter party. The CEO gave a toast about 'family'.");
   scene.party();
 }
 
 function promiseBonus() {
   const cost = 8_000 * s.employees.length;
   s.promises.push({ text: "Bonus for everyone", dueQuarter: s.quarter + 2, cost });
+  rememberAll(s, `CEO promised everyone a bonus, due Q${s.quarter + 2}.`);
   applyEffects(s, { morale: 10 });
   s.actionsLeft--;
   log(s, `You promised everyone a bonus (${fmt(cost)}, due Q${s.quarter + 2}).`);
@@ -485,6 +547,7 @@ function offshore() {
   applyEffects(s, { cash: -250_000, offshore: 250_000, suspicion: 14 });
   s.actionsLeft--;
   log(s, `Paid a $250k "strategic consulting" invoice to a company in Zug.`);
+  noticeZug(s);
   scene.ceoBubble("Strategic consulting. Very strategic.");
   scene.moneyFly();
 }
@@ -590,28 +653,146 @@ async function talkTo(id: number) {
   if (!e) return;
   const mood = employeeMood(s, e);
   const already = e.talkedQuarter === s.quarter;
+  const owns = ownedBy(s, e.id);
+  const canFire = s.actionsLeft > 0;
+  const memories = e.history.slice(-3).reverse();
   const r = await modal(
-    `<h2>${esc(e.name)}</h2><p class="sub">${esc(e.role)} · mood ${mood}/100</p><p><i>${esc(e.name.split(" ")[0])} ${esc(e.quirk)}.</i></p>
+    `<h2>${esc(e.name)}${e.contractor ? " <small>(contractor)</small>" : ""}</h2>
+    <p class="sub">${esc(e.role)} · mood ${mood}/100 · ${fmt(payOf(e))}/q${owns.length ? ` · <b>only one who understands ${owns.map((k) => `${SYSTEMS[k].emoji} ${SYSTEMS[k].name}`).join(", ")}</b>` : ""}</p>
+    <p><i>${esc(e.name.split(" ")[0])} ${esc(e.quirk)}.</i>${e.knowsZug ? " <i>Looks at you a little too long whenever someone says “Switzerland”.</i>" : ""}</p>
+    ${memories.length ? `<div class="memories"><b>They remember:</b>${memories.map((m) => `<p>• ${esc(m)}</p>`).join("")}</div>` : ""}
     ${already ? "<p>You already had a 1:1 this quarter. They're avoiding eye contact.</p>" : ""}`,
-    already ? [{ label: "Leave them alone", value: "cancel" }] : [
-      { label: "Never mind", value: "cancel" },
-      { label: "Say it", value: "go", primary: true },
+    [
+      { label: canFire ? "Let them go (1 decision)" : "Let them go (no decisions left)", value: canFire ? "fire" : "cancel" },
+      ...(already ? [{ label: "Leave them alone", value: "cancel" }] : [
+        { label: "Never mind", value: "cancel" },
+        { label: "Say it", value: "go", primary: true },
+      ]),
     ],
     already ? {} : { input: `Hey ${e.name.split(" ")[0]}, got a minute? I wanted to talk about...` },
   );
+  if (r.value === "fire") return fire(e);
   if (r.value !== "go") return;
   await withBusy(async () => {
     loading(`${e.name.split(" ")[0]} is thinking about how honest to be...`);
-    const j = await judged("employee", r.text, { npc: { name: e.name, role: e.role, quirk: e.quirk, mood } });
+    const j = await judged("employee", r.text, { npc: npcOf(e) });
     const d = { morale: clamp(j.deltas.morale, -6, 6), hype: clamp(j.deltas.hype, -3, 3), suspicion: j.deltas.suspicion };
     applyEffects(s, { morale: Math.round(d.morale / 2), hype: d.hype, suspicion: d.suspicion });
     e.moodOffset = clamp(e.moodOffset + d.morale * 2, -50, 50);
     e.talkedQuarter = s.quarter;
-    addPromises(j);
+    if (j.memory) remember(e, s.quarter, j.memory);
+    addPromises(j, e);
     log(s, `1:1 with ${e.name}: ${j.narration}`);
     showReactions(j, e.id);
     await modal(judgementHtml(`1:1 with ${e.name}`, j, "", { morale: d.morale, hype: d.hype, suspicion: d.suspicion }), [{ label: "OK", value: "ok" }]);
   });
+}
+
+async function fire(e: Employee) {
+  const owns = ownedBy(s, e.id);
+  const r = await modal(
+    `<h2>Let ${esc(e.name)} go?</h2>
+    <p>Saves ${fmt(payOf(e))} per quarter.${owns.length ? ` <b>Nobody else understands ${owns.map((k) => `${SYSTEMS[k].emoji} ${SYSTEMS[k].name}`).join(", ")}.</b> It will start to rot.` : ""}</p>
+    <p class="sub">They'll remember this. So will everyone who watches.</p>`,
+    [
+      { label: "Keep them", value: "no" },
+      { label: "Fire", value: "yes" },
+    ],
+  );
+  if (r.value !== "yes") return;
+  removeEmployee(s, e.id, "fired");
+  rememberAll(s, `Watched ${e.name.split(" ")[0]} get fired.`);
+  applyEffects(s, { morale: -6, hype: 2 });
+  s.actionsLeft--;
+  log(s, `Fired ${e.name}. Security walked them out with a box and a cactus.`);
+  render();
+  scene.layoffShock();
+}
+
+// ---------- alumni ----------
+
+function alumnusStatus(a: Alumnus) {
+  if (a.blewWhistle) return "📂 talking to auditors";
+  if (a.atCompetitor) return "🏃 at a competitor";
+  if (a.grudge >= 60) return "😠 holds a grudge";
+  if (a.grudge >= 35) return "😒 bitter";
+  return "🙂 over it";
+}
+
+async function alumni() {
+  const rows = s.alumni.map((a) => {
+    const block = rehireBlocker(s, a) ?? (s.actionsLeft <= 0 ? "No decisions left" : null);
+    return `<button class="choice" data-v="rehire:${a.id}" ${block ? "disabled" : ""}>
+      <b>${esc(a.name)} <span class="price">${fmt(a.salary * 3)}/q as contractor</span></b>
+      <small>${esc(a.role)} · ${a.reason} in Q${a.leftQuarter} · ${alumnusStatus(a)}${a.owned.length ? ` · knew ${a.owned.map((k) => `${SYSTEMS[k].emoji} ${SYSTEMS[k].name}`).join(", ")}` : ""}</small>
+      ${block ? `<span>${chip(block, "neutral")}</span>` : ""}
+    </button>`;
+  });
+  const r = await modal(
+    `<h2>📇 Alumni</h2>
+    <p class="sub">Everyone who left. They remember why. Rehiring one as a contractor costs a decision and 3× their old pay — if they agree.</p>
+    <div class="choices">${rows.join("") || "<p>Nobody has left yet. Give it time.</p>"}</div>`,
+    [{ label: "Close", value: "close" }],
+  );
+  if (!r.value.startsWith("rehire:")) return;
+  const a = s.alumni.find((x) => x.id === Number(r.value.slice(7)));
+  if (!a || rehireBlocker(s, a)) return;
+  const pitchText = await modal(
+    `<h2>Call ${esc(a.name)}</h2>
+    <p class="sub">${alumnusStatus(a)} · ${a.reason} in Q${a.leftQuarter}</p>
+    ${a.history.length ? `<div class="memories"><b>They remember:</b>${a.history.slice(-4).reverse().map((m) => `<p>• ${esc(m)}</p>`).join("")}</div>` : ""}`,
+    [
+      { label: "Hang up", value: "cancel" },
+      { label: "Make the call", value: "go", primary: true },
+    ],
+    { input: `Hey ${a.name.split(" ")[0]}, long time! So... funny story about ${a.owned[0] ? SYSTEMS[a.owned[0]].name.toLowerCase() : "the company"}...` },
+  );
+  if (pitchText.value !== "go") return;
+  await withBusy(async () => {
+    loading(`${a.name.split(" ")[0]} is deciding whether to block your number...`);
+    const j = await judged("rehire", pitchText.text, { npc: { name: a.name, role: a.role, quirk: a.quirk, mood: 100 - a.grudge, history: a.history, grudge: a.grudge, owns: a.owned.map((k) => SYSTEMS[k].name.toLowerCase()) } });
+    s.actionsLeft--;
+    if (j.memory) remember(a, s.quarter, j.memory);
+    applyEffects(s, { hype: clamp(j.deltas.hype, -3, 3), suspicion: j.deltas.suspicion });
+    let extra: string;
+    if (j.accepted) {
+      rehire(s, a.id);
+      const back = s.employees.find((e) => e.id === a.id);
+      if (back) addPromises(j, back);
+      extra = `<p class="big good">🤝 ${esc(a.name)} is coming back — as a contractor, at 3× the price.</p>`;
+    } else {
+      a.refusedQuarter = s.quarter;
+      a.grudge = clamp(a.grudge + 5, 0, 100);
+      extra = `<p class="big bad">📵 ${esc(a.name)} said no. Possibly in more words than that.</p>`;
+    }
+    log(s, `Called ${a.name}: ${j.narration}`);
+    await modal(judgementHtml(`Call with ${a.name}`, j, extra), [{ label: "OK", value: "ok" }]);
+  });
+}
+
+// ---------- board meetings ----------
+
+async function boardMeeting() {
+  const reasons = s.boardDemands.splice(0);
+  const r = await modal(
+    `<p class="kicker">Mandatory</p><h2>📋 The board wants a word</h2>
+    <p>Before anything else this quarter, explain these:</p>
+    <div class="memories">${reasons.map((x) => `<p>• ${esc(x)}</p>`).join("")}</div>
+    <p class="sub">Vague answers raise suspicion. Owning it with a plan helps. Blaming a former employee might work — they may hear about it.</p>`,
+    [{ label: "Face the board", value: "go", primary: true }],
+    { input: "Thank you all for being here. Let me start by saying this was an industry-wide issue..." },
+  );
+  loading("The board is exchanging looks...");
+  const j = await judged("board", r.text, { eventTitle: `Board meeting about: ${reasons.join(" | ")}` });
+  applyEffects(s, j.deltas);
+  addPromises(j);
+  for (const a of s.alumni) if (r.text.toLowerCase().includes(a.name.split(" ")[0].toLowerCase())) {
+    a.grudge = clamp(a.grudge + 15, 0, 100);
+    remember(a, s.quarter, "Heard the CEO blamed them in front of the board.");
+  }
+  log(s, `Board meeting: ${j.narration}`);
+  render();
+  await modal(judgementHtml("Board meeting", j), [{ label: "Back to work", value: "ok" }]);
 }
 
 async function ceoPanel() {
@@ -625,6 +806,7 @@ async function ceoPanel() {
       <p>Reputation: <b>${s.reputation}/100</b></p>
       <p>Net worth: <b>${fmt(netWorth(s))}</b> of ${fmt(FIRE_TARGET)} FIRE target</p>
     </div>
+    ${s.kpis.length ? `<h3>What you promised investors</h3>${s.kpis.map((k) => `<p>• “${esc(k.quote)}” — ${KPI_LABEL[k.metric]} ${k.metric === "revenue" || k.metric === "valuation" ? fmt(k.target) : k.target} by Q${k.dueQuarter}</p>`).join("")}` : ""}
     ${s.promises.length ? `<h3>Open promises</h3>${s.promises.map((p) => `<p>• ${esc(p.text)} — due Q${p.dueQuarter}, ~${fmt(p.cost)}</p>`).join("")}` : ""}`,
     [
       { label: "Resign & start over", value: "resign" },
@@ -648,6 +830,7 @@ function prefetchEvent() {
 
 async function startQuarter() {
   await withBusy(async () => {
+    if (s.boardDemands.length) await boardMeeting();
     loading(`Q${s.quarter}: something is happening at ${s.company}...`);
     const ev = await (pendingEvent ?? api<GameEvent>("/api/event", { context: describe(s), recentTitles: s.recentEvents }));
     pendingEvent = null;
@@ -664,6 +847,7 @@ async function startQuarter() {
     if (r.value.startsWith("choice:")) {
       const c = ev.choices[Number(r.value.slice(7))];
       const { gone } = applyEffects(s, c.effects);
+      if (c.effects.offshore > 0) noticeZug(s);
       log(s, `${ev.title} → ${c.label}. ${c.outcome}`);
       render();
       await modal(`<h2>${esc(c.label)}</h2><p class="narr">${esc(c.outcome)}</p><div class="chips">${deltaChips(c.effects)}</div>
@@ -825,6 +1009,11 @@ game.scene.add("office", OfficeScene, true, {
       return e ? employeeMood(s, e) : 50;
     },
     getValuation: () => fmt(valuation(s)),
+    getBadge: (id: number) => {
+      const e = s.employees.find((x) => x.id === id);
+      return (e ? ownedBy(s, id).map((k) => SYSTEMS[k].emoji).join("") : "") + (e?.contractor ? "💼" : "");
+    },
+    inCrisis: () => s.crises.length > 0,
     onReady: (sc: OfficeScene) => {
       scene = sc;
       render();
