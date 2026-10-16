@@ -3,7 +3,7 @@
 Satirical isometric tycoon where you're a C-level exec whose real goal is FIRE — via an honest IPO
 or by quietly wiring "consulting fees" to Zug. An LLM sits inside the game engine as the game master.
 
-![screenshot](docs/screenshot.png)
+![CEO Tycoon gameplay](docs/demo.gif)
 
 ## Run
 
