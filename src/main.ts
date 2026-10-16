@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 import "./style.css";
 import { OfficeScene } from "./scene/OfficeScene";
+import { music } from "./audio/music";
 import {
   ACTIONS_PER_QUARTER,
   FIRE_TARGET,
@@ -136,6 +137,7 @@ function renderHud() {
       <div class="bar fireb"><i style="width:${fire}%"></i></div>
     </div>
     ${mockMode ? `<div class="mock" title="No API key found - game master is a dumb heuristic">MOCK GM</div>` : ""}
+    <button id="mute" title="Corporate ukulele on/off">${music.muted ? "🔇" : "🔊"}</button>
   `;
 }
 
@@ -302,6 +304,7 @@ function renderSystems() {
 
 function render() {
   saveGame(s);
+  music.update({ morale: s.morale, suspicion: s.suspicion, crisis: s.crises.length > 0, office: s.office });
   renderSystems();
   renderHud();
   renderActions();
@@ -524,6 +527,7 @@ async function layoffs() {
   log(s, `Laid off ${gone.map((e) => e.name).join(", ")}. LinkedIn post: "Hardest decision of my life."`);
   render();
   scene.layoffShock();
+  music.play("layoff");
   setTimeout(() => {
     const e = s.employees[0];
     if (e) scene.bubble(e.id, "Am I next?");
@@ -531,6 +535,7 @@ async function layoffs() {
 }
 
 function hireTwo() {
+  music.play("hire");
   s.cash -= 40_000;
   const n = hire(s, 2);
   applyEffects(s, { morale: 2 });
@@ -540,6 +545,7 @@ function hireTwo() {
 }
 
 function party() {
+  music.play("party");
   const cost = 6_000 * s.employees.length;
   s.cash -= cost;
   s.lastPartyQuarter = s.quarter;
@@ -584,11 +590,13 @@ async function pivot() {
     applyEffects(s, j.deltas);
     s.actionsLeft--;
     showReactions(j);
+    music.play("pivot");
     await modal(judgementHtml("Pivot announced", j), [{ label: "Ship it", value: "ok" }]);
   });
 }
 
 function offshore() {
+  music.play("zug");
   applyEffects(s, { cash: -250_000, offshore: 250_000, suspicion: 14 });
   s.actionsLeft--;
   log(s, `Paid a $250k "strategic consulting" invoice to a company in Zug.`);
@@ -598,6 +606,7 @@ function offshore() {
 }
 
 async function doIpo() {
+  music.play("ipo");
   ipo(s);
   render();
   await gameOver();
@@ -685,6 +694,7 @@ async function shop() {
     const id = r.value.slice(4);
     if (upgradeBlocker(s, id)) continue;
     buyUpgrade(s, id);
+    music.play("kaching");
     render();
     scene.sparkle();
   }
@@ -752,6 +762,7 @@ async function fire(e: Employee) {
   log(s, `Fired ${e.name}. Security walked them out with a box and a cactus.`);
   render();
   scene.layoffShock();
+  music.play("layoff");
 }
 
 // ---------- team list ----------
@@ -858,6 +869,7 @@ async function alumni() {
 // ---------- board meetings ----------
 
 async function boardMeeting() {
+  music.play("board");
   const reasons = s.boardDemands.splice(0);
   const r = await modal(
     `<p class="kicker">Mandatory</p><h2>📋 The board wants a word</h2>
@@ -989,7 +1001,9 @@ async function nextQuarter() {
     if (r.value !== "yes") return;
   }
   const q = s.quarter;
+  const crisesBefore = s.crises.length;
   const report = endQuarter(s);
+  if (s.crises.length > crisesBefore) music.play("crisis");
   report.lines.forEach((l) => log(s, l));
   render();
   if (s.over) return gameOver();
@@ -1070,6 +1084,15 @@ async function intro() {
 }
 
 // ---------- boot ----------
+
+// browsers only allow audio after a user gesture; the intro button is the first one
+document.addEventListener("pointerdown", () => void music.start(), { once: true });
+$("#hud").addEventListener("click", (e) => {
+  if ((e.target as HTMLElement).id !== "mute") return;
+  void music.start();
+  music.toggleMute();
+  renderHud();
+});
 
 // Render at native device resolution (crisp vectors); the scene camera zooms to fit.
 const host = $("#game");

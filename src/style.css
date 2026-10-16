@@ -35,6 +35,8 @@ body { margin: 0; background: var(--bg); height: 100vh; display: flex; flex-dire
 .num.warn b { color: var(--bad); }
 .fire { display: flex; flex-direction: column; gap: 4px; font-size: 12px; min-width: 200px; }
 .fire span { font-weight: 600; }
+#mute { margin-left: auto; background: none; border: 1px solid var(--line); border-radius: 50%; width: 34px; height: 34px; font-size: 16px; cursor: pointer; }
+#mute:hover { background: #f0f3ff; }
 .mock { background: #fff3cd; color: #8a6d00; border: 1px solid #f0d77a; font-size: 11px; padding: 3px 8px; border-radius: 12px; font-weight: 700; }
 
 main { flex: 1; display: flex; min-height: 0; }
