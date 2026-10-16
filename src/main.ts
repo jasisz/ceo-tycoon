@@ -459,7 +459,7 @@ const GHOST_TONES = [
 const GHOST_COST = 5_000;
 
 function ghostRow() {
-  return `<div class="ghost"><span title="A comms agency writes it for you. ${fmt(GHOST_COST)} of company money per draft.">✍️ Ghostwrite <b>${fmt(GHOST_COST)}</b>:</span>${GHOST_TONES.map((g) => `<button type="button" data-ghost="${g.id}">${g.label}</button>`).join("")}</div>`;
+  return `<div class="ghost"><span title="A comms agency writes it for you, or remixes what's already in the box with a dash of the tone you click. ${fmt(GHOST_COST)} of company money per draft.">✍️ <em class="ghost-verb">Ghostwrite</em> <b>${fmt(GHOST_COST)}</b>:</span>${GHOST_TONES.map((g) => `<button type="button" data-ghost="${g.id}">${g.label}</button>`).join("")}</div>`;
 }
 
 function wireGhost(card: HTMLElement, ta: HTMLTextAreaElement) {
@@ -484,14 +484,21 @@ function wireGhost(card: HTMLElement, ta: HTMLTextAreaElement) {
         .join("\n")
         .slice(0, 1500);
       row.classList.add("busy");
-      ta.value = "";
-      ta.placeholder = "Your ghostwriter is typing...";
+      // something already in the box (theirs or the agency's): remix it instead of starting over
+      const draft = ta.value.trim();
+      ta.classList.add("ghosting");
+      if (!draft) ta.placeholder = "Your ghostwriter is typing...";
       try {
-        const r = await api<{ text: string; mock?: boolean }>("/api/ghostwrite", { context: describe(s), situation, tone: b.dataset.ghost });
+        const r = await api<{ text: string; mock?: boolean }>("/api/ghostwrite", { context: describe(s), situation, tone: b.dataset.ghost, draft });
         ta.value = r.text;
+        const trail = row.dataset.trail ? `${row.dataset.trail} + ${b.textContent}` : (b.textContent ?? "");
+        row.dataset.trail = trail;
+        row.querySelector(".ghost-verb")!.textContent = "Remix";
+        row.title = `So far: ${trail}`;
       } catch {
         ta.placeholder = "The ghostwriter is on strike. Type it yourself.";
       }
+      ta.classList.remove("ghosting");
       row.classList.remove("busy");
       ta.focus();
     }),

@@ -30,7 +30,7 @@ function gameMasterApi(): Plugin {
     "/api/genesis": (b) => generateGenesis(String(b.context ?? ""), Number(b.staff ?? 10), b.roles ?? []),
     "/api/epilogue": (b) => generateEpilogue(String(b.context ?? ""), String(b.ending ?? ""), String(b.history ?? "")),
     "/api/candidates": (b) => generateCandidates(String(b.context ?? ""), Array.isArray(b.roles) ? b.roles.map(String) : []),
-    "/api/ghostwrite": (b) => ghostwrite(String(b.context ?? ""), String(b.situation ?? ""), String(b.tone ?? "honest")),
+    "/api/ghostwrite": (b) => ghostwrite(String(b.context ?? ""), String(b.situation ?? ""), String(b.tone ?? "honest"), String(b.draft ?? "")),
     "/api/lifestyle": (b) => generateLifestyle(String(b.context ?? "")),
     "/api/perks": (b) => generatePerks(String(b.context ?? ""), !!b.remote),
     "/api/gossip": (b) => generateGossip(String(b.context ?? ""), b.names ?? []),

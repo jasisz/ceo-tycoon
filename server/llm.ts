@@ -816,15 +816,19 @@ const MOCK_GHOST: Record<string, string> = {
   ruthless: "Results or exits. I don't care which, but I'll know by Friday.",
 };
 
-export function ghostwrite(context: string, situation: string, tone: string) {
+export function ghostwrite(context: string, situation: string, tone: string, draft = "") {
   const style = GHOST_TONES[tone] ?? GHOST_TONES.honest;
-  const user = `You are the CEO's ghostwriter. Write exactly what the CEO says in the situation below, in this style: ${style}. Use names and details from the situation and the game state where it helps. Keep it short.\n\nSituation (what's on the CEO's screen):\n${situation.slice(0, 1500)}\n\nGame state:\n${context}`;
+  // something already in the box: remix it with a dash of the new tone instead of starting over
+  const task = draft.trim()
+    ? `You are the CEO's ghostwriter. Here is the current draft of what the CEO will say:\n"""${draft.slice(0, 1200)}"""\nRemix it: keep its content, facts, promises and overall voice (about 70-80% of it), but blend in a noticeable dash of this style: ${style}. Similar length. Return only the new text.`
+    : `You are the CEO's ghostwriter. Write exactly what the CEO says in the situation below, in this style: ${style}. Use names and details from the situation and the game state where it helps. Keep it short.`;
+  const user = `${task}\n\nSituation (what's on the CEO's screen):\n${situation.slice(0, 1500)}\n\nGame state:\n${context}`;
   return withFallback(
     async () => {
       const g = z.object({ text: z.string() }).parse(await ask(WORLD, user, ghostSchema, 600));
       return { text: g.text.slice(0, 600) };
     },
-    () => ({ text: MOCK_GHOST[tone] ?? MOCK_GHOST.honest }),
+    () => ({ text: draft.trim() ? `${draft.trim()} ${MOCK_GHOST[tone] ?? ""}`.trim() : (MOCK_GHOST[tone] ?? MOCK_GHOST.honest) }),
   );
 }
 

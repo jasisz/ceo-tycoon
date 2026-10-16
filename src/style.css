@@ -250,3 +250,5 @@ main { flex: 1; display: flex; min-height: 0; }
 .ls-pay button:disabled { opacity: .45; cursor: not-allowed; }
 .ls-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 @media (max-width: 700px) { .ls-grid { grid-template-columns: 1fr; } }
+.ghost em { font-style: normal; }
+#m-input.ghosting { opacity: .55; }
