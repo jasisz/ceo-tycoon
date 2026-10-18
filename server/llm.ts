@@ -116,7 +116,7 @@ async function withFallback<T>(llm: () => Promise<T>, mock: () => T): Promise<T 
 
 // ---------- judge: free-text CEO actions ----------
 
-export type Scene = "allhands" | "investors" | "employee" | "event" | "board" | "rehire" | "pivot" | "media" | "reorg" | "recruit" | "brunner" | "boardvote";
+export type Scene = "allhands" | "investors" | "employee" | "event" | "board" | "rehire" | "pivot" | "media" | "reorg" | "recruit" | "brunner" | "boardvote" | "sales";
 
 export interface JudgeRequest {
   scene: Scene;
@@ -339,6 +339,8 @@ const SCENE_BRIEF: Record<Scene, string> = {
     "The CEO is trying to hire the candidate described below, with the offer below. The reaction must be the candidate speaking. They weigh the offer against their ask, what they've heard about the company (Glassdoor, alumni, press - see the game state), and how the CEO comes across. Set accepted=true only if they'd realistically sign: a lowball needs a genuinely compelling pitch; overpromising, red-flag corporate speak or dodging what they've heard makes them walk. memory: one sentence they'll remember about how they were hired, from their point of view. Any concrete promise the CEO makes (remote days, a promotion, a bonus) goes into promises. Morale/hype effects are tiny.",
   reorg:
     "The CEO is announcing a reorganisation (the actual changes are listed below; the engine has already applied them, pay included). Judge the announcement and the structure itself. Office politics are the point: people who were passed over for someone junior, people demoted, people moved under a manager they dislike (check their history and quirks), people suddenly managing a former peer. Put the strongest individual reactions in people (with memories from their point of view; someone may leave over it). Morale drops for chaotic or unfair reorgs and rises when the structure finally makes sense. Investors (hype) like new C-level titles and 'efficiency', dislike churn at the top. Reactions from the people most affected. If outside consultants drew it, people resent being restructured by strangers who met them once; a sloppy job gets mocked and the CEO gets blamed for outsourcing the hard part, a solid one gets grudging respect (for the consultants, not the CEO).",
+  sales:
+    "The CEO is pitching the company's product to a prospective customer (the buyer and the price are below). The reaction must be the buyer speaking, in character. They weigh the price against their budget (a discount is an easy yes if the product fits; list price needs a pitch that addresses their actual need; premium needs a genuinely compelling, specific case), whether the product as it really is (see the game state) solves their need, what they've heard (crises, Glassdoor, press, churned customers) and the CEO's credibility. Set accepted=true only if they'd realistically sign. If the CEO promises a feature, integration, SLA or custom work to close the deal, put it in promises with a realistic cost to build in USD (engineers' time) and when it's due: the engine bills it. An experienced buyer smells overpromising, especially when Product or Infra is in bad shape. memory: empty. Morale tiny; hype small (+ for a logo-worthy customer).",
   rehire:
     "The CEO is trying to convince a former employee to come back as a well-paid contractor, usually because only they understand a system that is now broken. They remember everything in their history and their grudge level. Set accepted=true only if the CEO genuinely addresses what went wrong (an apology that sounds real, paying what was promised, respect). Groveling corporate speak or new promises from a CEO who broke old ones should fail. The reaction is that person speaking.",
   employee:
@@ -388,7 +390,7 @@ function mockJudge(req: JudgeRequest): Judgement {
       req.scene === "employee" && req.npc && /\braise\b/.test(t) && !/\b(next|soon|later|promise)\b/.test(t)
         ? [{ name: req.npc.name, memory: "[mock] The CEO gave me a raise on the spot.", salary_change: 5_000, mood_change: 15, new_quirk: "", leaves: false }]
         : [],
-    accepted: (req.scene === "rehire" && ((req.npc?.grudge ?? 50) < 55 || /\b(pay|sorry|apolog)/.test(t))) || (req.scene === "recruit" && !/lowball/i.test(req.offer ?? "") && buzz < 3),
+    accepted: (req.scene === "rehire" && ((req.npc?.grudge ?? 50) < 55 || /\b(pay|sorry|apolog)/.test(t))) || (req.scene === "recruit" && !/lowball/i.test(req.offer ?? "") && buzz < 3) || (req.scene === "sales" && !/premium/i.test(req.offer ?? "") && buzz < 3),
     deal: mockDeal(req),
     votes: req.scene === "boardvote" ? (req.board?.members ?? []).map((name, i) => ({ name, vote: (i === 0 ? buzz >= 2 : Math.random() < 0.5) ? ("yes" as const) : ("no" as const), line: "[mock] I've seen the numbers." })) : [],
     kpis: inv && /(\d+)\s*x/.test(t) ? [{ quote: req.text.slice(0, 80), metric: "revenue" as const, multiplier: Number(/(\d+)\s*x/.exec(t)![1]), quarters: 4 }] : [],
@@ -422,7 +424,7 @@ export function judge(req: JudgeRequest) {
   const media = o ? `\nOutlet: ${o.name.slice(0, 80)} - ${o.brief.slice(0, 300)}\nThe question: "${o.question.slice(0, 300)}"` : "";
   const reorg = req.scene === "reorg" && req.reorg?.length ? `\nChanges in this reorg:\n- ${req.reorg.slice(0, 30).map((l) => String(l).slice(0, 160)).join("\n- ")}` : "";
   const bv = req.scene === "boardvote" && req.board ? `\nThe motion: ${String(req.board.motion).slice(0, 300)}\nVoting board members: ${req.board.members.slice(0, 6).map(String).join(", ")}` : "";
-  const offer = req.scene === "recruit" && req.offer ? `\nThe offer: ${req.offer.slice(0, 400)}` : "";
+  const offer = (req.scene === "recruit" || req.scene === "sales") && req.offer ? `\nThe offer: ${req.offer.slice(0, 400)}` : "";
   const user = `${SCENE_BRIEF[req.scene]}${npc}${ev}${terms}${media}${reorg}${offer}${bv}\n\nThe CEO says/does:\n"""${req.text.slice(0, 2000)}"""`;
   return withFallback(
     async () => {
@@ -435,18 +437,18 @@ export function judge(req: JudgeRequest) {
         reactions: j.reactions.slice(0, 3),
         // a "promise" that costs nothing can't be kept or broken by the engine; measurable ones live in kpis
         promises: j.promises.filter((p) => p.cost > 0).slice(0, 2),
-        accepted: (req.scene === "rehire" || req.scene === "recruit") && j.accepted,
+        accepted: (req.scene === "rehire" || req.scene === "recruit" || req.scene === "sales") && j.accepted,
         // in a 1:1 only the person in the room can be affected (e.g. an on-the-spot raise)
         people:
-          req.scene === "rehire" || req.scene === "recruit"
+          req.scene === "rehire" || req.scene === "recruit" || req.scene === "sales"
             ? []
             : req.scene === "employee"
               ? clampPeople(j.people).filter((p) => p.name.toLowerCase().includes((req.npc?.name ?? "").split(" ")[0].toLowerCase()))
               : clampPeople(j.people),
-        kpis: ["employee", "rehire", "recruit", "brunner"].includes(req.scene) ? [] : j.kpis.slice(0, 3),
+        kpis: ["employee", "rehire", "recruit", "brunner", "sales"].includes(req.scene) ? [] : j.kpis.slice(0, 3),
         deal: clampDeal(j.deal, tm),
         votes: req.scene === "boardvote" ? j.votes.slice(0, 6).map((v) => ({ ...v, line: v.line.slice(0, 200) })) : [],
-        company: req.scene === "employee" || req.scene === "rehire" || req.scene === "recruit" ? EMPTY_COMPANY : clampCompany(j.company),
+        company: req.scene === "employee" || req.scene === "rehire" || req.scene === "recruit" || req.scene === "sales" ? EMPTY_COMPANY : clampCompany(j.company),
         memory: j.memory.slice(0, 200),
       };
     },
@@ -596,7 +598,7 @@ function storyBrief(d?: StoryDirection) {
 export function generateEvent(context: string, recentTitles: string[], story?: StoryDirection) {
   const user = `${storyBrief(story)}
 
-Invent this quarter's event for the CEO. It should react to the current state of the company (low morale, high suspicion, shrinking runway, weird pivots, broken promises...) or be a classic startup absurdity (license shortages, English lessons, sudden urge to pivot or buy an unrelated company, reorganisations, office plants, the co-CEO proposal, a viral Glassdoor review...).
+Invent this quarter's event for the CEO. It should react to the current state of the company (low morale, high suspicion, shrinking runway, weird pivots, broken promises...) or be a classic startup absurdity (AI mandates, shadow AI, an AI agent going rogue, a customer demanding a feature that doesn't exist, license shortages, English lessons, sudden urge to pivot or buy an unrelated company, reorganisations, office plants, the co-CEO proposal, a viral Glassdoor review...).
 Make effects proportional and consistent with the outcomes. A choice may rename the company or change what it makes (fill company) - e.g. a panic rebrand to something with AI in the name - but only when the choice is literally that. If the event is about specific employees, use their exact names from the roster and record, per choice, what happens to them in "people" (a raise must have a salary_change, a resolved grievance a new_quirk). Don't repeat these recent events: ${recentTitles.join("; ") || "none"}.`;
   return withFallback(
     async () => {
@@ -809,6 +811,64 @@ export function generateCandidates(context: string, roles: string[]) {
       };
     },
     () => ({ candidates: MOCK_CANDIDATES }),
+  );
+}
+
+// ---------- sales prospects ----------
+
+const prospectsSchema = {
+  type: "object",
+  properties: {
+    prospects: {
+      type: "array",
+      description: "Exactly 3 prospective customers for what the company actually sells right now (see the product). Mix: one big logo with a demanding procurement process, one small eager customer with an obvious catch, one wildcard tied to the story (a former employee's new company, an investor's portfolio company, a competitor's unhappy customer, someone who saw the CEO on a podcast).",
+      items: {
+        type: "object",
+        properties: {
+          client: { type: "string", description: "Company name, invented, satirical but believable, at most 5 words" },
+          contact: { type: "string", description: "The buyer: full name and title, e.g. 'Dana Whitfield, VP Procurement'" },
+          need: { type: "string", description: "What they actually need: one short sentence, at most ~18 words" },
+          demand: { type: "string", description: "The one or two things they'll ask for to sign (a feature, an integration, an SLA, a discount, a logo on the website), at most ~15 words" },
+          red_flag: { type: "string", description: "The catch. Concrete, one short sentence, at most ~20 words." },
+          budget: { type: "integer", description: "What they'd pay per quarter in USD at list price" },
+          quarters: { type: "integer", description: "Contract length in quarters (2-6)" },
+        },
+        required: ["client", "contact", "need", "demand", "red_flag", "budget", "quarters"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["prospects"],
+  additionalProperties: false,
+} as const;
+
+const Prospects = z.object({
+  prospects: z.array(z.object({ client: z.string(), contact: z.string(), need: z.string(), demand: z.string(), red_flag: z.string(), budget: z.number(), quarters: z.number() })),
+});
+export type Prospect = z.infer<typeof Prospects>["prospects"][number];
+
+const MOCK_PROSPECTS: Prospect[] = [
+  { client: "Globex Logistics", contact: "Dana Whitfield, VP Procurement", need: "Wants to look innovative before their own board meeting.", demand: "SSO, an on-prem option and a 40-page security questionnaire.", red_flag: "Procurement takes nine months and they've 'piloted' four competitors.", budget: 60_000, quarters: 4 },
+  { client: "Bean There Coffee Co.", contact: "Marco Rinaldi, Owner", need: "Three cafés, one spreadsheet, a lot of feelings.", demand: "Personal onboarding from the CEO.", red_flag: "Pays late. Always.", budget: 15_000, quarters: 2 },
+  { client: "Hooli Ventures Portfolio Co.", contact: "Priya Raman, Head of Ops", need: "Their investor told them to buy from you.", demand: "A case study with their logo on your homepage.", red_flag: "They'll churn the moment the investor stops asking.", budget: 35_000, quarters: 3 },
+];
+
+export function generateProspects(context: string, revenue: number) {
+  const user = "Generate this quarter's sales leads for the company.";
+  // the engine decides what a deal can be worth: half of what the team earns without contracts, at most
+  const cap = Math.max(40_000, Math.round(revenue * 0.5));
+  const clamp = (p: Prospect): Prospect => ({
+    client: p.client.slice(0, 60),
+    contact: p.contact.slice(0, 70),
+    need: p.need.slice(0, 200),
+    demand: p.demand.slice(0, 200),
+    red_flag: p.red_flag.slice(0, 200),
+    budget: Math.max(10_000, Math.min(cap, Math.round(p.budget / 1000) * 1000)),
+    quarters: Math.max(2, Math.min(6, Math.round(p.quarters))),
+  });
+  return withFallback(
+    async () => ({ prospects: Prospects.parse(await ask("prospects", user, prospectsSchema, 1800, context, true)).prospects.slice(0, 3).map(clamp) }),
+    () => ({ prospects: MOCK_PROSPECTS.map(clamp) }),
   );
 }
 

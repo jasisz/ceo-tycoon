@@ -14,6 +14,7 @@ import {
   type OfficeTier,
   type UpgradeSpec,
 } from "./office";
+import { activeDeals, AGENT_COST, AGENT_INCIDENTS, agentIncidentChance, agentOutput, aiTier, churnRisk, dealRevenue, describeAi, describeDeals, renewChance, type Agent, type Deal, type Prospect } from "./business";
 import { describeLifestyle, expenseSuspicion, lifestyleEffects, ownedItem, type LifestyleItem, type Owned, type Payer } from "./lifestyle";
 import { bureaucracyDrag, ceoSpan, delegates, teamOutput, cSuiteHype, CEO_SPAN, describeOrg, orphanReports, placeHire, reportsOf, stepOrg, titleOf, type Title } from "./org";
 
@@ -173,6 +174,10 @@ export interface GameState {
   cfo?: string; // the board's CFO, if they appointed one
   payFrozenUntil?: number; // the board froze your salary until this quarter
   recentMotions?: string[]; // what the board voted on lately, newest first
+  deals?: Deal[]; // customers under contract
+  prospectOffers?: { quarter: number; items: Prospect[] }; // this quarter's leads
+  aiTier?: number; // index into AI_TIERS
+  agents?: Agent[]; // AI agents that replaced people
   lastBoardVote: number;
   audits: number; // audits survived at this company; auditors keep a file
   zugTransfers: number; // "consulting fees" paid at this company
@@ -268,6 +273,8 @@ export function loadGame(): GameState | null {
     s.threads ??= [];
     s.audits ??= 0;
     s.zugTransfers ??= 0;
+    s.deals ??= [];
+    s.agents ??= [];
     if (!s.systems) {
       s.systems = freshSystems();
       assignOwners(s);
@@ -612,7 +619,10 @@ export function systemsMultiplier(s: GameState) {
 
 export function quarterlyRevenue(s: GameState) {
   const mult = 1 + ownedUpgrades(s).reduce((a, u) => a + u.revenue, 0) - (s.office === "remote" ? 0.03 : 0) - bureaucracyDrag(s);
-  return Math.round(teamOutput(s, (e) => employeeMood(s, e)) * REVENUE_PER_EMPLOYEE * (0.4 + s.morale / 100) * mult * systemsMultiplier(s));
+  const people = teamOutput(s, (e) => employeeMood(s, e)) * (0.4 + s.morale / 100) * (mult + aiTier(s).boost);
+  // agents don't care about morale, office perks or meetings; they do need the systems to work
+  const agents = (s.agents ?? []).length * agentOutput(s);
+  return Math.round((people + agents) * REVENUE_PER_EMPLOYEE * systemsMultiplier(s) + dealRevenue(s));
 }
 
 export const payOf = (e: Employee) => e.salary * (e.contractor ? CONTRACTOR_RATE : 1);
@@ -626,6 +636,7 @@ export function costBreakdown(s: GameState) {
     you: ceoPay(s),
     lifestyle: lifestyleUpkeep(s, "company"),
     saas: Math.max(0, s.employees.length - 1) * LICENSE_COST,
+    ai: aiTier(s).spend * s.employees.length + (s.agents ?? []).length * AGENT_COST,
   };
 }
 
@@ -1023,6 +1034,8 @@ export function describe(s: GameState) {
       return `${SYSTEMS[k].name} ${s.systems[k].health}/100 (${o ? `only ${o.name} understands it` : "NOBODY understands it"})`;
     }).join("; ")}.`,
     s.crises.length ? `ONGOING CRISES: ${s.crises.map((k) => SYSTEMS[k].crisis).join(" ")}` : "",
+    describeDeals(s),
+    describeAi(s),
     s.kpis.length ? `Numbers the CEO promised investors: ${s.kpis.map((k) => `"${k.quote}" (due Q${k.dueQuarter})`).join("; ")}.` : "",
     s.cast.some((c) => c.history.length) ? `What the recurring characters remember: ${s.cast.filter((c) => c.history.length).map((c) => `${c.name}: ${c.history.slice(-2).join(" / ")}`).join("; ")}.` : "",
     `Recent log: ${s.log.slice(0, 4).join(" | ")}`,
@@ -1106,6 +1119,8 @@ export function endQuarter(s: GameState): QuarterReport {
   }
 
   stepSystems(s, lines);
+  stepDeals(s, lines);
+  stepAi(s, lines);
   stepAlumni(s, lines);
   stepKpis(s, lines);
 
@@ -1177,7 +1192,9 @@ export function endQuarter(s: GameState): QuarterReport {
       win: false,
       canContinue: s.reputation >= 20,
       title: "Everyone left",
-      text: "You are now CEO of an empty office and a very expensive coffee machine.",
+      text: s.agents?.length
+        ? `Nobody is left but ${s.agents.length} AI agent${s.agents.length === 1 ? "" : "s"}. They hold a stand-up every morning and agree with each other. Investors call it "fully autonomous"; the auditors call it something else.`
+        : "You are now CEO of an empty office and a very expensive coffee machine.",
     };
     return { lines, gone };
   }
@@ -1359,6 +1376,69 @@ function stepSystems(s: GameState, lines: string[]) {
     }
   }
   lines.push(`Systems: ${changes.join(" · ")}`);
+}
+
+/** Contracts run out, and customers leave when the product is on fire. */
+function stepDeals(s: GameState, lines: string[]) {
+  const kept: Deal[] = [];
+  for (const d of activeDeals(s)) {
+    if (d.until <= s.quarter) {
+      if (Math.random() < renewChance(s)) {
+        const n = d.until - d.signed + 1;
+        kept.push({ ...d, value: Math.round((d.value * 1.1) / 1000) * 1000, signed: s.quarter + 1, until: s.quarter + n });
+        lines.push(`🤝 ${d.client} renewed for ${n} more quarters, at +10%.`);
+      } else lines.push(`📭 ${d.client}'s contract ran out. They didn't renew. Their last email was two words long.`);
+    } else if (Math.random() < churnRisk(s)) {
+      s.hype = clamp(s.hype - 3);
+      lines.push(`💔 ${d.client} cancelled (${fmt(d.value)}/q). Their churn survey answer: "${pick(["it kept breaking", "nobody answered our tickets", "we found something that works", "your invoices were wrong. Twice"])}."`);
+    } else kept.push(d);
+  }
+  s.deals = kept;
+}
+
+/** Agents fail in new and exciting ways; people notice who got replaced. */
+function stepAi(s: GameState, lines: string[]) {
+  const agents = s.agents ?? [];
+  for (const a of agents) {
+    if (Math.random() >= agentIncidentChance(s)) continue;
+    const inc = pick(AGENT_INCIDENTS);
+    if (inc.churn && activeDeals(s).length) {
+      const d = [...activeDeals(s)].sort((x, y) => y.value - x.value)[0];
+      s.deals = (s.deals ?? []).filter((x) => x !== d);
+      lines.push(`🤖 ${a.name} ${inc.text} ${d.client} cancelled.`);
+    } else lines.push(`🤖 ${a.name} ${inc.text}`);
+    applyEffects(s, { cash: inc.cash, hype: inc.hype, suspicion: inc.suspicion });
+    if (inc.system) damageSystems(s, 15, [inc.system]);
+    log(s, `AI incident: ${a.name} ${inc.text}`);
+  }
+  // everyone does the maths on who's next
+  if (agents.length) s.morale = clamp(s.morale - Math.min(4, agents.length));
+  const tier = s.aiTier ?? 0;
+  if (tier >= 2) s.hype = clamp(s.hype + 1);
+  if (tier >= 3) s.morale = clamp(s.morale + 1);
+  if (tier === 0 && s.employees.length > 3 && Math.random() < 0.08) {
+    s.suspicion = clamp(s.suspicion + 3);
+    lines.push(`🕵️ Someone pasted the customer list into a free chatbot "to make a nicer table". It's in the training data now.`);
+  }
+}
+
+/** Replace a person with an AI agent. Cheaper, tireless, and nobody's idea of a colleague. */
+export function replaceWithAgent(s: GameState, id: number): Agent | null {
+  const e = removeEmployee(s, id, "laid off");
+  if (!e) return null;
+  const al = s.alumni.find((x) => x.id === e.id);
+  if (al) {
+    al.grudge = clamp(al.grudge + 10);
+    remember(al, s.quarter, "Replaced by an AI agent. Had to train it first.");
+  }
+  const first = e.name.split(" ")[0];
+  const agent: Agent = { id: e.id, name: `${first}GPT`, role: e.role, replaced: e.name, since: s.quarter };
+  (s.agents ??= []).push(agent);
+  s.morale = clamp(s.morale - 6);
+  s.hype = clamp(s.hype + 4);
+  rememberAll(s, `Watched ${first} get replaced by an AI agent called ${agent.name}.`);
+  log(s, `Replaced ${e.name} (${e.role}) with an AI agent, ${agent.name}. LinkedIn post: "AI won't replace people. People using AI will."`);
+  return agent;
 }
 
 /** Former employees don't just disappear. */

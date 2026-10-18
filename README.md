@@ -53,10 +53,18 @@ downsides stay).
   managers squeeze 10% more out of their teams, and a manager inherits the systems of whoever quits.
 - **Hiring**: the LLM sends three candidates with CVs, red flags and whatever they've heard about you.
   Pick one, set salary and a sweetener, make your case. They can say no.
+- **Customers**: three sales leads a quarter, invented for whatever you sell right now, each with a
+  buyer, a demand and a catch. Pick a price (discount, list, premium) and pitch; the LLM plays the
+  buyer. A signed contract pays every quarter until it runs out, renews if the product is healthy, and
+  churns when Product or Infra is on fire. Whatever you promised to close it, you'll be billed to build.
+- **AI**: set a tools budget per head (nothing, basic seats, pro everything, unlimited GPUs) for a
+  revenue boost, or replace someone with an agent: cheaper, ~60-90% of the output, no morale, takes
+  their systems knowledge to the grave, and now and then promises a customer a lifetime refund.
 - **Herr Brunner**: money moves to Zug through a scheme of your choice (consulting invoice, Alpine
   "retreat", Cyprus licensing, crypto "treasury"), and he wants a cover story for the auditors.
 - **The board** meets every 4 quarters with a motion of its own: appoint a CFO who watches every
-  payment, freeze your salary, cut staff, sell the perks, or a vote of no confidence. You argue, they
+  payment, freeze your salary, cut staff, sell the perks, revenue or valuation targets, or a vote of
+  no confidence, picked by what worries it most and never the same thing twice in a row. You argue, they
   vote, the engine enacts it. Every board seat you traded for money is a vote against you.
 - **Lifestyle**: every quarter the LLM curates fresh, personal picks next to the classics (a vest, a Lambo,
   a penthouse, a private jet that buys you an extra decision). Pay from your own savings
@@ -76,7 +84,7 @@ downsides stay).
 - `vite.config.ts` — mounts `/api/*` on the dev server so the key never reaches the browser.
 
 Default game master model is `claude-sonnet-5-5` (judgements, events, epilogues); flavour text (gossip,
-ghostwriting, shop catalogues, candidates) runs on `claude-haiku-5-5`. Override with `CEO_MODEL` and
+ghostwriting, shop catalogues, candidates, sales leads) runs on `claude-haiku-5-5`. Override with `CEO_MODEL` and
 `CEO_FAST_MODEL` in `.env`, or per task (`CEO_MODEL_EVENT`, `CEO_MODEL_JUDGE`, `CEO_MODEL_GOSSIP`... see `.env.example`). The slow-changing part of the game state (who's who, the story so far) is sent as a
 cached system block, so calls within a quarter mostly read it from the prompt cache. The dev server logs
 tokens, cache hits and a running cost estimate for every call (`[llm] ...`).

@@ -43,6 +43,7 @@ import {
   setCeoSalary,
   type SystemId,
   costBreakdown,
+  replaceWithAgent,
   hireCandidate,
   HIRE_PERKS,
   RECRUIT_FEE,
@@ -95,6 +96,7 @@ import {
   type GameState,
 } from "./game/state";
 import { applyReorg, CEO_SPAN, ceoSpan, delegates, HEALTHY_DEPTH, MANAGER_SPAN, managerOf, orgDepth, reportsOf, TITLE_IDS, TITLES, titleOf, wouldCycle, type OrgChange, type Title } from "./game/org";
+import { accountCapacity, activeDeals, AGENT_COST, dealRevenue, AI_TIERS, aiTier, agentOutput, dealValue, PRICING, type Prospect } from "./game/business";
 import { consult, CONSULTANT_IDS, consultantLine, CONSULTANTS, type ConsultantId, type ConsultantJob } from "./game/consultants";
 import { clampItem, expenseSuspicion, LIFESTYLE, ownedItem, type LifestyleItem, type Owned, type Payer } from "./game/lifestyle";
 import { BOARD_EVERY, boardMembers, enactMotion, pickMotion, rememberVote, tally } from "./game/board";
@@ -236,6 +238,16 @@ const ACTIONS: Action[] = [
     run: media,
   },
   {
+    id: "deal",
+    group: "talk",
+    icon: "🤝",
+    label: "Close a deal",
+    hint: "Pitch a customer. Three leads a quarter; they've read your reviews. Whatever you promise to close it, you'll have to build.",
+    enabled: () => !s.prospectOffers || s.prospectOffers.quarter !== s.quarter || s.prospectOffers.items.length > 0,
+    sub: () => (activeDeals(s).length ? `${activeDeals(s).length} customer${activeDeals(s).length === 1 ? "" : "s"} · ${fmt(activeDeals(s).reduce((a, d) => a + d.value, 0))}/q` : "sell something"),
+    run: closeDeal,
+  },
+  {
     id: "hire",
     group: "people",
     icon: "🧑‍💻",
@@ -320,6 +332,17 @@ const ACTIONS: Action[] = [
   },
   { id: "pivot", group: "company", icon: "🔀", label: "Pivot", hint: "New product. Hype up, morale down, Product and Sales take a beating.", enabled: () => true, sub: () => "hype ↑ product ↓", run: pivot },
   { id: "realestate", group: "company", icon: "🏢", label: "Real estate", hint: "Move offices, lease another floor or go remote.", enabled: () => true, sub: () => `${office(s).emoji} ${office(s).name.split(" ")[0].toLowerCase()}`, run: realEstate },
+  {
+    id: "ai",
+    group: "company",
+    icon: "🤖",
+    label: "AI",
+    hint: "How much you spend on AI tools per person, and whether to replace someone with an agent (uses a decision).",
+    free: true,
+    enabled: () => true,
+    sub: () => `${aiTier(s).label.toLowerCase()}${s.agents?.length ? ` · ${s.agents.length} agent${s.agents.length === 1 ? "" : "s"}` : ""}`,
+    run: aiPanel,
+  },
   { id: "shop", group: "company", icon: "🛍️", label: "Office shop", hint: "Perks for the office. Costs money, not a decision.", free: true, enabled: () => true, sub: () => "free action", run: shop },
   { id: "ipo", group: "company", icon: "🔔", label: "IPO", hint: `Q8+, valuation ≥ ${fmt(IPO_VALUATION)} and revenue ≥ 80% of costs. You net ~60% of your stake after lock-up and taxes.`, enabled: () => canIPO(s), sub: () => (canIPO(s) ? "ring the bell!" : `needs ${ipoBlocker(s)}`), run: doIpo },
   {
@@ -915,6 +938,140 @@ async function recruit() {
     render();
     await modal(judgementHtml(`Offer to ${c.name}`, j, extra), [{ label: "OK", value: "ok" }]);
   });
+}
+
+// ---------- sales ----------
+
+async function closeDeal() {
+  if (!s.prospectOffers || s.prospectOffers.quarter !== s.quarter) {
+    const r = await withBusy(async () => {
+      loading("Your sales team is digging through the CRM...");
+      return api<{ prospects: Prospect[]; mock?: boolean }>("/api/prospects", { context: describe(s), revenue: quarterlyRevenue(s) - dealRevenue(s) });
+    });
+    if (!r?.prospects.length) return;
+    s.prospectOffers = { quarter: s.quarter, items: r.prospects };
+  }
+  const leads = s.prospectOffers.items;
+  const noDecision = s.actionsLeft <= 0;
+  const pickP = await modal(
+    `<h2>🤝 Sales leads <small>Q${s.quarter}</small></h2><p class="sub">Pitching one uses a decision. ${activeDeals(s).length >= accountCapacity(s) ? `⚠️ You already have ${activeDeals(s).length} customers and people for ${accountCapacity(s)}; more without another salesperson means churn. ` : ""}${noDecision ? "You have none left this quarter; the leads will wait." : "The rest stay warm until the quarter ends."}</p>
+    <div class="choices">${leads
+      .map(
+        (p, i) => `<button class="choice" data-v="${i}" ${noDecision ? "disabled" : ""}>
+        <b>${esc(p.client)} <span class="price">~${fmt(p.budget)}/q · ${p.quarters}q</span></b>
+        <small>👤 ${esc(p.contact)}</small>
+        <small>🎯 ${esc(p.need)}</small>
+        <small>📋 Wants: ${esc(p.demand)}</small>
+        <small>🚩 ${esc(p.red_flag)}</small>
+      </button>`,
+      )
+      .join("")}</div>`,
+    [{ label: "Not now", value: "none" }],
+    { wide: true },
+  );
+  const idx = Number(pickP.value);
+  const p = leads[idx];
+  if (!p || pickP.value === "none") return;
+  const promise = modal(
+    `<h2>💼 Pitch to ${esc(p.client)}</h2>
+    <p class="sub">${esc(p.contact)} · budget ~${fmt(p.budget)}/q for ${p.quarters} quarters · wants: ${esc(p.demand)}</p>
+    <div class="terms"><label>Price <select id="d-price">${PRICING.map((o, i) => `<option value="${i}" ${i === 1 ? "selected" : ""}>${esc(o.label)}: ${fmt(dealValue(p, o.mult))}/q</option>`).join("")}</select></label></div>
+    <p>Why should they buy?</p>`,
+    [
+      { label: "Walk away", value: "cancel" },
+      { label: "Pitch", value: "go", primary: true },
+    ],
+    { input: `${p.contact.split(" ")[0]}, I'll show you exactly how we solve this...` },
+  );
+  let price = PRICING[1];
+  $("#d-price").addEventListener("change", (ev) => (price = PRICING[Number((ev.target as HTMLSelectElement).value)]));
+  const r = await promise;
+  if (r.value !== "go") return;
+  await withBusy(async () => {
+    loading(`${p.contact.split(",")[0]} is forwarding your deck to procurement...`);
+    const value = dealValue(p, price.mult);
+    const j = await judged("sales", r.text, {
+      offer: `${price.label}: ${fmt(value)} per quarter for ${p.quarters} quarters (their budget is about ${fmt(p.budget)})`,
+      npc: { name: p.contact.split(",")[0], role: `${p.contact.split(",").slice(1).join(",").trim() || "buyer"} at ${p.client}`, quirk: `Needs: ${p.need} Will ask for: ${p.demand} Catch: ${p.red_flag}`, mood: 50 },
+    });
+    s.actionsLeft--;
+    s.prospectOffers!.items = leads.filter((_, i) => i !== idx);
+    applyEffects(s, { morale: clamp(j.deltas.morale, -2, 2), hype: clamp(j.deltas.hype, -4, 4), suspicion: j.deltas.suspicion });
+    let extra: string;
+    if (j.accepted) {
+      (s.deals ??= []).push({ client: p.client, value, signed: s.quarter, until: s.quarter + p.quarters - 1 });
+      addPromises(j);
+      music.play("hire");
+      log(s, `Signed ${p.client}: ${fmt(value)}/q for ${p.quarters} quarters. ${j.narration}`);
+      extra = `<p class="big good">✍️ ${esc(p.client)} signed: ${fmt(value)}/q until Q${s.quarter + p.quarters - 1}.</p><p class="sub">It pays from this quarter. It stops paying if they churn: keep Product and Infra alive and someone on Sales.</p>`;
+    } else {
+      j.promises = []; // nothing signed, nothing to build
+      log(s, `${p.client} passed. ${j.narration}`);
+      extra = `<p class="big bad">📵 ${esc(p.client)} passed. They're "revisiting in Q${s.quarter + 2}".</p>`;
+    }
+    render();
+    await modal(judgementHtml(`Pitch to ${p.client}`, j, extra), [{ label: "OK", value: "ok" }]);
+  });
+}
+
+// ---------- AI ----------
+
+async function aiPanel() {
+  const t = s.aiTier ?? 0;
+  const agents = s.agents ?? [];
+  const canReplace = s.actionsLeft > 0 && s.employees.length > 1;
+  const r = await modal(
+    `<h2>🤖 AI strategy</h2>
+    <p class="sub">Tools make people faster. Agents replace them: ${fmt(AGENT_COST)}/q in tokens, ~${Math.round(agentOutput(s) * 100)}% of a person's output, no morale, no desk, occasionally catastrophic.</p>
+    <h3 class="team-h">🧰 Tools budget <small>per person per quarter</small></h3>
+    <div class="choices">${AI_TIERS.map(
+      (x, i) => `<button class="choice ${i === t ? "on" : ""}" data-v="tier:${i}">
+        <b>${i === t ? "✅ " : ""}${esc(x.label)} <span class="price">${x.spend ? `${fmt(x.spend)}/head · ${fmt(x.spend * s.employees.length)}/q` : "free"}</span></b>
+        <small>${esc(x.blurb)}</small>
+        <small>${x.boost ? `Revenue +${Math.round(x.boost * 100)}%` : "Shadow AI risk"}${i >= 2 ? " · investors like it" : ""}${i === 3 ? " · the team loves it" : ""}</small>
+      </button>`,
+    ).join("")}</div>
+    ${agents.length ? `<h3 class="team-h">🦾 Agents on payroll <small>${agents.length}</small></h3><div class="memories">${agents.map((a) => `<p>• <b>${esc(a.name)}</b>: ${esc(a.role)}, replaced ${esc(a.replaced)} in Q${a.since}</p>`).join("")}</div>` : ""}
+    <h3 class="team-h">✂️ Replace someone with an agent <small>${canReplace ? "uses a decision" : s.actionsLeft <= 0 ? "no decisions left" : "you need someone to keep"}</small></h3>
+    <p class="sub">Team morale drops and stays lower while agents are around; investors cheer. Whatever systems they understood go with them.</p>
+    <div class="choices team">${s.employees
+      .map((e) => {
+        const owns = SYSTEM_IDS.filter((k) => s.systems[k].owner === e.id);
+        return `<button class="choice person" data-v="replace:${e.id}" ${canReplace ? "" : "disabled"}>
+          <b>${moodFace(employeeMood(s, e))} ${esc(e.name)} <span class="price">saves ${fmt(e.salary - AGENT_COST)}/q</span></b>
+          <small>${esc(titleOf(e))}${owns.length ? ` · only one who knows ${owns.map((k) => SYSTEMS[k].emoji).join("")}` : ""}</small>
+        </button>`;
+      })
+      .join("")}</div>`,
+    [{ label: "Close", value: "close" }],
+    { wide: true },
+  );
+  if (r.value.startsWith("tier:")) {
+    const i = Number(r.value.slice(5));
+    if (i !== t) {
+      s.aiTier = i;
+      log(s, i > t ? `Raised the AI tools budget to "${AI_TIERS[i].label}".` : `Cut the AI tools budget to "${AI_TIERS[i].label}". Someone is already asking in #general.`);
+      render();
+    }
+    return aiPanel();
+  }
+  if (!r.value.startsWith("replace:")) return;
+  const e = s.employees.find((x) => x.id === Number(r.value.slice(8)));
+  if (!e) return;
+  const ok = await modal(
+    `<h2>🤖 Replace ${esc(e.name)}?</h2><p>${esc(e.name.split(" ")[0])} will spend their last week training ${esc(e.name.split(" ")[0])}GPT. Everyone will watch.</p>`,
+    [
+      { label: "Keep them", value: "no" },
+      { label: "Replace", value: "yes", primary: true },
+    ],
+  );
+  if (ok.value !== "yes") return;
+  const a = replaceWithAgent(s, e.id);
+  if (!a) return;
+  s.actionsLeft--;
+  scene.layoffShock();
+  render();
+  await modal(`<h2>🤖 Meet ${esc(a.name)}</h2><p>${esc(e.name)} is gone. ${esc(a.name)} has already sent everyone a calendar invite titled "Sync 🚀".</p><div class="chips">${chip("Morale −6", "bad")}${chip("Hype +4", "good")}${chip(`Payroll −${fmt(e.salary - AGENT_COST)}/q`, "good")}</div>`, [{ label: "Back to work", value: "ok" }]);
 }
 
 async function layoffs() {
@@ -1765,7 +1922,7 @@ function quarterReportHtml(q: number, b: ReturnType<typeof snapshot>, lines: str
   const money = (d: number, goodUp = true) =>
     d === 0 ? "" : `<span class="d ${(d > 0) === goodUp ? "up" : "down"}">${d > 0 ? "▲" : "▼"}${fmt(Math.abs(d))}</span>`;
   const c = b.costs;
-  const costTotal = c.payroll + c.rent + c.perks + c.you + c.saas + c.lifestyle;
+  const costTotal = c.payroll + c.rent + c.perks + c.you + c.saas + c.lifestyle + c.ai;
   const net = b.revenue - costTotal;
   const runway = runwayQuarters(s);
   const pl = [
@@ -1774,15 +1931,16 @@ function quarterReportHtml(q: number, b: ReturnType<typeof snapshot>, lines: str
     [`${office(s).emoji} Rent`, -c.rent, ""],
     ...(c.perks ? [["🛍️ Perk upkeep", -c.perks, ""]] : []),
     ["🧩 SaaS licences", -c.saas, ""],
+    ...(c.ai ? [["🤖 AI tools & agents", -c.ai, ""]] : []),
     [c.you ? "🕶️ Your salary" : "🕶️ Your salary (frozen)", -c.you, ""],
     ...(c.lifestyle ? [["💳 Your lifestyle (company card)", -c.lifestyle, "bad"]] : []),
   ] as [string, number, string][];
   const vital = (label: string, cls: string, from: number, to: number, goodUp = true) =>
     `<div class="vital"><span>${label}</span><div class="bar ${cls}"><i style="width:${to}%"></i></div><b>${to}</b>${arrow(to - from, goodUp)}</div>`;
   const tone = (l: string) =>
-    /🚨|📉|Broken promise|quit\.|📂|⭐|🏃|📨|Incident|nobody understands|miserable|eats|wall-to-wall|of nobody|no desk|layers of management/i.test(l)
+    /🚨|📉|💔|📭|🤖|🕵️|Broken promise|quit\.|📂|⭐|🏃|📨|Incident|nobody understands|miserable|eats|wall-to-wall|of nobody|no desk|layers of management/i.test(l)
       ? "bad"
-      : /✅|🎯|kept a promise|adopted|crisis is over/i.test(l)
+      : /✅|🎯|🤝|kept a promise|adopted|crisis is over/i.test(l)
         ? "good"
         : "";
   const story = lines.filter((l) => !/^Revenue |^Systems: /.test(l));
