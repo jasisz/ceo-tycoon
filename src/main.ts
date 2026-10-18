@@ -95,6 +95,7 @@ import {
   type GameState,
 } from "./game/state";
 import { applyReorg, CEO_SPAN, ceoSpan, delegates, HEALTHY_DEPTH, MANAGER_SPAN, managerOf, orgDepth, reportsOf, TITLE_IDS, TITLES, titleOf, wouldCycle, type OrgChange, type Title } from "./game/org";
+import { consult, CONSULTANT_IDS, consultantLine, CONSULTANTS, type ConsultantId, type ConsultantJob } from "./game/consultants";
 import { clampItem, expenseSuspicion, LIFESTYLE, ownedItem, type LifestyleItem, type Owned, type Payer } from "./game/lifestyle";
 import { BOARD_EVERY, boardMembers, enactMotion, pickMotion, rememberVote, tally } from "./game/board";
 import { clampUpgrade, FLOOR_COST, FLOOR_DESKS, FLOOR_RENT, NOVELTY_QUARTERS, OFFICES, UPGRADES, type OfficeTier, type UpgradeSpec } from "./game/office";
@@ -1379,6 +1380,7 @@ async function team() {
 async function orgChart() {
   const plan = new Map<number, OrgChange>(s.employees.map((e) => [e.id, { id: e.id, managerId: managerOf(s, e)?.id ?? null, title: e.title ?? null }]));
   let warn = "";
+  let hired: { id: ConsultantId; job: ConsultantJob } | null = null;
   const promise = modal(
     `<h2>🏛️ Org chart</h2>
     <p class="sub">Nothing changes until you announce the reorg (1 decision). Titles cost money; taking one away costs more than money.</p>
@@ -1477,6 +1479,8 @@ async function orgChart() {
       ${span > CEO_SPAN ? `<p class="sub bad">⚠️ More than ${CEO_SPAN} people report to you: your calendar eats one decision every quarter.</p>` : ""}
       ${depth > HEALTHY_DEPTH ? `<p class="sub bad">⚠️ ${depth} layers: revenue −${(depth - HEALTHY_DEPTH) * 4}% to alignment meetings.</p>` : ""}
       ${warn ? `<p class="sub bad">${esc(warn)}</p>` : ""}
+      <div class="ghost consult"><span title="They redraw the whole chart for you. You still have to announce it. The more you pay, the better the odds, but nobody guarantees anything.">🧑‍💼 <em>Hire consultants to redo it</em>:</span>${CONSULTANT_IDS.map((k) => `<button type="button" data-consult="${k}" title="${esc(CONSULTANTS[k].blurb)}">${CONSULTANTS[k].emoji} ${esc(CONSULTANTS[k].name)} <b>${fmt(CONSULTANTS[k].fee)}</b></button>`).join("")}</div>
+      ${hired ? `<div class="memories"><b>${CONSULTANTS[hired.id].emoji} ${esc(CONSULTANTS[hired.id].name)}'s proposal, loaded below:</b>${hired.job.notes.map((n) => `<p>• ${esc(n)}</p>`).join("")}</div>` : ""}
       ${inspector}
       <div class="oc-wrap"><ul class="oc"><li><div class="oc-card ceo" data-id="ceo"><span class="oc-top">👔</span><b>You</b><small>CEO · ${span} direct</small>${putHere(null)}</div>${children(top)}</li></ul></div>
       <p class="sub">🧭 ≤4 direct reports and every manager running a happy team of 3–${MANAGER_SPAN} = +1 decision per quarter. Managers in a good mood (60+) get 10% more out of their team. When someone leaves, their manager inherits their systems.</p>`;
@@ -1512,6 +1516,24 @@ async function orgChart() {
       if (sel !== null) moveTo(sel, v === "ceo" ? null : Number(v));
       draw();
     });
+    body.querySelectorAll<HTMLButtonElement>("[data-consult]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const id = b.dataset.consult as ConsultantId;
+        const c = CONSULTANTS[id];
+        if (s.cash < c.fee) {
+          warn = `${c.name} wants ${fmt(c.fee)} upfront. You don't have it.`;
+          return draw();
+        }
+        s.cash -= c.fee;
+        log(s, `Paid ${c.name} ${fmt(c.fee)} to redesign the org chart.`);
+        renderHud();
+        const job = consult(s, id, (e) => employeeMood(s, e));
+        for (const p of job.plan) plan.set(p.id, { ...p });
+        hired = { id, job };
+        sel = null;
+        draw();
+      }),
+    );
     body.querySelector("[data-close]")?.addEventListener("click", () => {
       sel = null;
       draw();
@@ -1527,6 +1549,7 @@ async function orgChart() {
   draw();
   const r = await promise;
   if (r.value !== "go") return;
+  const via = hired as { id: ConsultantId; job: ConsultantJob } | null;
   const changes = [...plan.values()].filter((c) => {
     const e = s.employees.find((x) => x.id === c.id)!;
     return (managerOf(s, e)?.id ?? null) !== c.managerId || (e.title ?? null) !== c.title;
@@ -1538,17 +1561,17 @@ async function orgChart() {
       { label: "Cancel", value: "cancel" },
       { label: "Send to all-staff", value: "go", primary: true },
     ],
-    { input: "Team, to better align with our next phase of growth, I'm excited to share some changes to our structure..." },
+    { input: via ? CONSULTANTS[via.id].pitch : "Team, to better align with our next phase of growth, I'm excited to share some changes to our structure..." },
   );
   if (a.value !== "go") return;
   await withBusy(async () => {
     loading("Everyone is refreshing the org chart in Notion...");
     const res = applyReorg(s, changes, s.quarter, remember);
-    const j = await judged("reorg", a.text, { reorg: res.lines });
+    const j = await judged("reorg", a.text, { reorg: via ? [consultantLine(via.id, via.job), ...res.lines] : res.lines });
     applyEffects(s, j.deltas);
     addPromises(j);
     s.actionsLeft--;
-    log(s, `Reorg (${res.lines.length} changes): ${j.narration}`);
+    log(s, `Reorg (${res.lines.length} changes${via ? `, drawn by ${CONSULTANTS[via.id].name}` : ""}): ${j.narration}`);
     showReactions(j);
     const list = `<div class="memories"><b>What changed:</b>${res.lines.map((l) => `<p>• ${esc(l)}</p>`).join("")}</div>`;
     await modal(judgementHtml("Reorg announced", j, list), [{ label: "Back to work", value: "ok" }]);
