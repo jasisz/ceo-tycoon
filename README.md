@@ -47,6 +47,8 @@ downsides stay).
   announce the reorg and watch the politics. More than 6 direct reports eats one of your decisions
   every quarter; managers' moods leak into their teams; too many layers cost revenue in meetings;
   promote your best engineer to manager and nobody maintains infra anymore. Skip-level 1:1s get noticed.
+  Or pay consultants to draw it for you: your brother-in-law ($8k), two ex-Big Tech guys with a Notion
+  template ($40k) or a prestige strategy firm ($150k). Pricier means better odds, never a guarantee.
   Get it right and it pays: few direct reports plus happy managers frees up an extra decision, good
   managers squeeze 10% more out of their teams, and a manager inherits the systems of whoever quits.
 - **Hiring**: the LLM sends three candidates with CVs, red flags and whatever they've heard about you.
