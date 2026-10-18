@@ -172,6 +172,7 @@ export interface GameState {
   expensed: number; // lifestyle put on this company's card, not yet found by auditors
   cfo?: string; // the board's CFO, if they appointed one
   payFrozenUntil?: number; // the board froze your salary until this quarter
+  recentMotions?: string[]; // what the board voted on lately, newest first
   lastBoardVote: number;
   audits: number; // audits survived at this company; auditors keep a file
   zugTransfers: number; // "consulting fees" paid at this company
